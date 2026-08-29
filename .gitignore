@@ -1,0 +1,25 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# Arduino/PlatformIO build artifacts
+build/
+.pio/
+*.hex
+*.bin.orig
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OpenSCAD backup files
+*.scad~
+*.csg
