@@ -9,6 +9,7 @@ trigger sound electronically/wirelessly instead of with a physical clapper.
 ```
 3dprint/    OpenSCAD model for the bell body and printed test pieces
 firmware/   ESP32 firmware (transmitter + receiver) and PC test tooling
+android/    Android app for the v0.2 live-demo receiver (BLE-only)
 ```
 
 ## Hardware

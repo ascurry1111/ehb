@@ -14,6 +14,16 @@ build/
 *.hex
 *.bin.orig
 
+# Android / Gradle
+.gradle/
+android/**/build/
+android/**/.cxx/
+android/local.properties
+*.iml
+.idea/
+captures/
+android/**/*.apk
+
 # Python
 __pycache__/
 *.pyc

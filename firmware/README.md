@@ -3,11 +3,19 @@
 ## What's in here
 
 ```
-feather_transmitter/feather_transmitter.ino   Feather ESP32 V2 — ring detection, BLE + ESP-NOW tx
-devkit_receiver/devkit_receiver.ino           ESP32-DEVKITC-V4 — ESP-NOW rx, forwards to USB serial
-pc_software/pc_serial_listener.py             PC — plays a tone from the ESP-NOW/serial path
-pc_software/pc_ble_listener.py                PC — plays a tone from the BLE path directly
+feather_transmitter/feather_transmitter.ino   Feather ESP32 V2 — ring detection, BLE tx (v0.2: BLE-only)
+devkit_receiver/devkit_receiver.ino           ESP32-DEVKITC-V4 — ESP-NOW rx, forwards to USB serial (v0.1 path)
+receiver_tests/pc_serial_listener.py          PC — plays a tone from the ESP-NOW/serial path (v0.1 path)
+receiver_tests/pc_ble_listener.py             PC — plays a tone from the BLE path directly
 ```
+
+**v0.2 note:** `feather_transmitter.ino` was changed to BLE-only for the
+Android demo (Android has no ESP-NOW support), which also removes the
+WiFi/BLE radio-coexistence jitter noted below. The ESP-NOW + BLE dual-transport
+version, and `devkit_receiver.ino`/`pc_serial_listener.py`'s upstream
+counterpart, are preserved at the `v0.1` git tag if you need that path again.
+For the live demo, see [`../android/HandbellReceiver`](../android/HandbellReceiver)
+instead of the PC listeners.
 
 ## Wiring
 
@@ -19,7 +27,16 @@ LIS3DH → Feather ESP32 V2 (I2C):
 
 If you have the STEMMA QT versions of both boards, just use the STEMMA QT cable and skip the wiring above entirely.
 
-## Bring-up order
+## Bring-up order (v0.2, BLE-only demo path)
+
+1. **Flash `feather_transmitter.ino`** to the Feather. Open its Serial Monitor at 115200 baud — you should see its BLE address printed, then `RING #n peak=...g` lines whenever you swing/tap the accelerometer.
+2. **Test the BLE → PC path** (quick sanity check without the phone app): run `pc_ble_listener.py`. Swing the bell — you should hear a tone on the PC.
+3. **Test the BLE → phone path**: build and run the Android app in
+   [`../android/HandbellReceiver`](../android/HandbellReceiver) on the demo
+   phone. Swing the bell — you should see the ring counter increment and hear
+   a tone from the phone.
+
+## Bring-up order (v0.1, ESP-NOW + BLE dual-transport — see the `v0.1` git tag)
 
 1. **Flash `devkit_receiver.ino`** to the ESP32-DEVKITC-V4 first and open its Serial Monitor at 115200 baud. It prints its own MAC address on boot — copy it.
 2. **Paste that MAC** into `RECEIVER_MAC` near the top of `feather_transmitter.ino`.
