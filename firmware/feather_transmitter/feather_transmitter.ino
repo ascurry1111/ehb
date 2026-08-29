@@ -20,6 +20,22 @@
     - Adafruit LIS3DH breakout, wired over I2C (STEMMA QT or SDA/SCL + 3V + GND)
     - 500mAh LiPo on the JST connector
 
+  BATTERY TELEMETRY — how it works and its limits
+    The Feather V2 has no fuel-gauge IC (unlike the ESP32-S2/S3 Feathers) —
+    just a resistor divider from BAT to the analog pin A13, and a charge LED
+    wired directly to the MCP73831 charger with no GPIO tap. So percentage,
+    "charging", and "USB-powered with no battery" are all *inferred* from one
+    noisy voltage reading over time, not measured directly:
+      - Percentage comes from a standard LiPo voltage curve lookup (approximate).
+      - A near-0V reading means no battery is physically present — since the
+        board is alive to report anything at all, it must be running on USB.
+      - Charging vs. discharging is judged by the *trend* over a rolling
+        window (rising = charging, falling = discharging). A flat reading
+        near max voltage is reported as "resting" rather than guessed at,
+        since a fully-charged battery on USB and a fully-charged battery
+        just sitting unplugged look identical from voltage alone.
+    See BATT_* constants below to tune thresholds against your actual pack.
+
   LIBRARIES (Arduino Library Manager)
     - Adafruit LIS3DH
     - Adafruit Unified Sensor
@@ -65,6 +81,7 @@
 // Generate your own at https://www.uuidgenerator.net/ if you want unique ones.
 #define BLE_SERVICE_UUID      "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_RING_UUID    "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+#define BLE_CHAR_BATTERY_UUID "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_DEVICE_NAME       "WirelessHandbell"
 
 // Preferred connection parameters, requested as soon as a central connects.
@@ -74,6 +91,22 @@
 #define CONN_LATENCY          0     // never skip a connection event
 #define CONN_TIMEOUT          400   // 4000ms supervision timeout
 
+// Battery telemetry — LOW PRIORITY. Sampled on a slow timer in loop(), never
+// gating or slowing the ring-detection path above. See the header comment.
+#define BATT_PIN                A13     // BATT_MONITOR: 200K/200K divider on the Feather V2
+#define BATT_SAMPLE_INTERVAL_MS 5000    // how often we take a fresh reading + notify
+#define BATT_TREND_SAMPLES      12      // 12 * 5s = 60s window used to judge charge/discharge trend
+#define BATT_CAPACITY_MAH       500     // matches the 500mAh LiPo this was designed around
+#define BATT_ASSUMED_DRAW_MA    60      // rough average draw for the time-remaining estimate —
+                                         // measure your actual draw with a multimeter for a better number
+#define BATT_ABSENT_VOLTAGE     2.0f    // below this, no LiPo is physically connected
+#define BATT_VOLTAGE_CAL        1.0f    // fudge factor if your multimeter disagrees with the ADC reading
+#define BATT_CHARGE_RISE_MV     15      // min rise over the trend window to call it "charging"
+#define BATT_DISCHARGE_FALL_MV  5       // min fall over the trend window to call it "discharging"
+// The two thresholds above are starting points — watch the raw millivolt
+// readings Serial-printed below across a real charge/discharge cycle and
+// retune them if the state flickers or lags.
+
 // ---------------------------------------------------------------------------
 // GLOBALS
 // ---------------------------------------------------------------------------
@@ -81,6 +114,7 @@ Adafruit_LIS3DH lis = Adafruit_LIS3DH();
 
 NimBLEServer* bleServer = nullptr;
 NimBLECharacteristic* ringCharacteristic = nullptr;
+NimBLECharacteristic* batteryCharacteristic = nullptr;
 bool bleClientConnected = false;
 
 uint32_t ringCounter = 0;
@@ -93,6 +127,29 @@ typedef struct __attribute__((packed)) {
   uint16_t peakMilliG;    // peak acceleration magnitude in milli-g (for velocity-sensitive tone)
   uint32_t timestampMs;   // millis() at time of detection, for latency diagnostics
 } RingEvent;
+
+// Must match BatteryState in BatteryStatus.kt on the Android side.
+enum BatteryState : uint8_t {
+  BATT_STATE_UNKNOWN     = 0,  // not enough trend history yet (first ~60s after boot)
+  BATT_STATE_DISCHARGING = 1,  // on battery, voltage flat or falling
+  BATT_STATE_CHARGING    = 2,  // voltage rising — actively being charged over USB
+  BATT_STATE_NO_BATTERY  = 3,  // no LiPo connected; running on USB power alone
+};
+
+// Wire-format packet sent as the battery notify payload — see BatteryStatus.kt.
+typedef struct __attribute__((packed)) {
+  uint8_t percent;                    // 0-100, best-effort estimate from the voltage curve
+  uint8_t state;                      // BatteryState
+  uint16_t milliVolts;                // raw (smoothed) battery voltage, for diagnostics
+  uint16_t estimatedMinutesRemaining; // only meaningful when state == BATT_STATE_DISCHARGING
+} BatteryStatus;
+
+// --- Battery sampling state (all touched only by sampleBatteryIfDue) ---
+unsigned long lastBattSampleMillis = 0;
+float battVoltageEma = -1.0f;                    // -1 = not yet initialized
+float battTrendHistory[BATT_TREND_SAMPLES] = {0};
+int battTrendIndex = 0;
+int battTrendCount = 0;
 
 // ---------------------------------------------------------------------------
 // BLE server callbacks
@@ -114,6 +171,92 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     NimBLEDevice::startAdvertising();
   }
 };
+
+// ---------------------------------------------------------------------------
+// BATTERY TELEMETRY — low priority, see header comment
+// ---------------------------------------------------------------------------
+
+// Rough 1S LiPo discharge curve, piecewise-linear interpolated. Voltage-based
+// state-of-charge is inherently approximate — treat this as a rough gauge,
+// not a precise one.
+uint8_t voltageToPercent(float v) {
+  static const float curveV[]   = {3.00, 3.45, 3.68, 3.74, 3.77, 3.79, 3.82, 3.87, 3.92, 3.98, 4.06, 4.20};
+  static const float curvePct[] = {   0,    5,   10,   20,   30,   40,   50,   60,   70,   80,   90,  100};
+  const int n = sizeof(curveV) / sizeof(curveV[0]);
+
+  if (v <= curveV[0]) return 0;
+  if (v >= curveV[n - 1]) return 100;
+  for (int i = 1; i < n; i++) {
+    if (v <= curveV[i]) {
+      float span = curveV[i] - curveV[i - 1];
+      float frac = (v - curveV[i - 1]) / span;
+      return (uint8_t)(curvePct[i - 1] + frac * (curvePct[i] - curvePct[i - 1]));
+    }
+  }
+  return 100;
+}
+
+// Called every loop() iteration but only does real work once every
+// BATT_SAMPLE_INTERVAL_MS — a single analogRead() plus some cheap arithmetic,
+// nowhere near the accelerometer polling rate, so it never meaningfully
+// competes with ring detection for CPU time.
+void sampleBatteryIfDue(unsigned long now) {
+  if (now - lastBattSampleMillis < BATT_SAMPLE_INTERVAL_MS) return;
+  lastBattSampleMillis = now;
+
+  int raw = analogRead(BATT_PIN);
+  // 12-bit ADC, 3.3V reference, x2 for the 200K/200K divider on BAT.
+  float voltage = (raw / 4095.0f) * 3.3f * 2.0f * BATT_VOLTAGE_CAL;
+
+  // Light exponential smoothing — the ESP32's ADC is fairly noisy on its own.
+  battVoltageEma = (battVoltageEma < 0) ? voltage : (battVoltageEma * 0.7f + voltage * 0.3f);
+
+  battTrendHistory[battTrendIndex] = battVoltageEma;
+  battTrendIndex = (battTrendIndex + 1) % BATT_TREND_SAMPLES;
+  if (battTrendCount < BATT_TREND_SAMPLES) battTrendCount++;
+
+  BatteryStatus bs;
+  bs.milliVolts = (uint16_t)(battVoltageEma * 1000.0f);
+
+  if (battVoltageEma < BATT_ABSENT_VOLTAGE) {
+    bs.percent = 0;
+    bs.state = BATT_STATE_NO_BATTERY;
+    bs.estimatedMinutesRemaining = 0;
+  } else {
+    bs.percent = voltageToPercent(battVoltageEma);
+
+    if (battTrendCount < BATT_TREND_SAMPLES) {
+      bs.state = BATT_STATE_UNKNOWN;  // haven't seen a full 60s window yet
+    } else {
+      // battTrendIndex currently points at the oldest sample (next one to be
+      // overwritten), since the buffer just wrapped past it above.
+      float oldest = battTrendHistory[battTrendIndex];
+      float deltaMv = (battVoltageEma - oldest) * 1000.0f;
+      if (deltaMv >= BATT_CHARGE_RISE_MV) {
+        bs.state = BATT_STATE_CHARGING;
+      } else if (deltaMv <= -BATT_DISCHARGE_FALL_MV) {
+        bs.state = BATT_STATE_DISCHARGING;
+      } else {
+        // Ambiguous flat zone (e.g. resting at/near full). Default to
+        // "discharging" rather than invent a "full" state we can't actually
+        // distinguish from "resting, unplugged" — see header comment.
+        bs.state = BATT_STATE_DISCHARGING;
+      }
+    }
+
+    bs.estimatedMinutesRemaining = (bs.state == BATT_STATE_DISCHARGING)
+        ? (uint16_t)((bs.percent / 100.0f) * BATT_CAPACITY_MAH / BATT_ASSUMED_DRAW_MA * 60.0f)
+        : 0;
+  }
+
+  Serial.printf("[BATT] %umV  %u%%  state=%u  ~%umin remaining\n",
+                bs.milliVolts, bs.percent, bs.state, bs.estimatedMinutesRemaining);
+
+  if (bleClientConnected && batteryCharacteristic) {
+    batteryCharacteristic->setValue((uint8_t*)&bs, sizeof(bs));
+    batteryCharacteristic->notify();
+  }
+}
 
 // ---------------------------------------------------------------------------
 // SETUP
@@ -142,6 +285,9 @@ void setup() {
   NimBLEService* service = bleServer->createService(BLE_SERVICE_UUID);
   ringCharacteristic = service->createCharacteristic(
       BLE_CHAR_RING_UUID,
+      NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
+  batteryCharacteristic = service->createCharacteristic(
+      BLE_CHAR_BATTERY_UUID,
       NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
   service->start();
 
@@ -205,4 +351,8 @@ void loop() {
       ringCharacteristic->notify();
     }
   }
+
+  // Low priority — runs after ring detection, and is a no-op almost every
+  // iteration (see the comment on the function itself).
+  sampleBatteryIfDue(now);
 }

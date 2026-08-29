@@ -18,7 +18,7 @@ build/
 .gradle/
 android/**/build/
 android/**/.cxx/
-android/local.properties
+android/**/local.properties
 *.iml
 .idea/
 captures/

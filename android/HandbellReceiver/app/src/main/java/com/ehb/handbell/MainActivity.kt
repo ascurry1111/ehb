@@ -16,6 +16,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvRingCount: TextView
     private lateinit var tvLastPeak: TextView
+    private lateinit var tvBattery: TextView
     private lateinit var rootView: android.view.View
 
     private lateinit var ringPlayer: RingPlayer
@@ -44,6 +45,7 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         tvRingCount = findViewById(R.id.tvRingCount)
         tvLastPeak = findViewById(R.id.tvLastPeak)
+        tvBattery = findViewById(R.id.tvBattery)
 
         ringPlayer = RingPlayer(this)
         ringPlayer.prepare()
@@ -69,6 +71,7 @@ class MainActivity : AppCompatActivity() {
             context = this,
             onStatus = { status -> runOnUiThread { tvStatus.text = status } },
             onRing = { event -> runOnUiThread { onRing(event) } },
+            onBattery = { status -> runOnUiThread { onBattery(status) } },
         ).also { it.start() }
     }
 
@@ -80,6 +83,21 @@ class MainActivity : AppCompatActivity() {
 
         // Play immediately — this is the latency-critical path, no extra work before it.
         ringPlayer.play(event.peakG)
+    }
+
+    private fun onBattery(status: BatteryStatus) {
+        tvBattery.text = when (status.state) {
+            BatteryState.NO_BATTERY -> "⚡ Running on USB (no battery)"
+            BatteryState.CHARGING -> "🔌 Charging — ${status.percent}%"
+            BatteryState.DISCHARGING -> "🔋 ${status.percent}% • ${formatMinutes(status.estimatedMinutesRemaining)} left"
+            BatteryState.UNKNOWN -> "🔋 ${status.percent}% • reading…"
+        }
+    }
+
+    private fun formatMinutes(totalMinutes: Int): String {
+        val hours = totalMinutes / 60
+        val minutes = totalMinutes % 60
+        return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
     }
 
     private fun flashBackground() {

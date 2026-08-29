@@ -30,12 +30,14 @@ class BleRingClient(
     private val context: Context,
     private val onStatus: (String) -> Unit,
     private val onRing: (RingEvent) -> Unit,
+    private val onBattery: (BatteryStatus) -> Unit,
 ) {
     private companion object {
         const val TAG = "BleRingClient"
         const val DEVICE_NAME = "WirelessHandbell"
         val SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
         val CHAR_RING_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
+        val CHAR_BATTERY_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val RESCAN_DELAY_MS = 1000L
     }
@@ -127,6 +129,11 @@ class BleRingClient(
             }
         }
 
+        // Android's GATT stack allows only one outstanding read/write at a time —
+        // issuing a second descriptor write before the first one's callback fires
+        // silently fails. Queue them and drain one at a time from onDescriptorWrite.
+        private val descriptorWriteQueue = ArrayDeque<BluetoothGattDescriptor>()
+
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -134,22 +141,45 @@ class BleRingClient(
                 onStatus("Service discovery failed")
                 return
             }
-            val characteristic = g.getService(SERVICE_UUID)?.getCharacteristic(CHAR_RING_UUID)
-            if (characteristic == null) {
+            val service = g.getService(SERVICE_UUID)
+            val ringOk = enableNotify(g, service?.getCharacteristic(CHAR_RING_UUID))
+            if (!ringOk) {
                 onStatus("Ring characteristic not found")
                 return
             }
-            g.setCharacteristicNotification(characteristic, true)
-            val descriptor = characteristic.getDescriptor(CCCD_UUID)
-            if (descriptor == null) {
-                onStatus("Notification descriptor not found")
-                return
+            // Battery telemetry is a nice-to-have — don't fail the connection over it.
+            val batteryChar = service?.getCharacteristic(CHAR_BATTERY_UUID)
+            if (batteryChar == null || !enableNotify(g, batteryChar)) {
+                Log.w(TAG, "Battery characteristic not found")
             }
+            onStatus("Connected to $DEVICE_NAME")
+        }
+
+        @SuppressLint("MissingPermission")
+        private fun enableNotify(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic?): Boolean {
+            if (characteristic == null) return false
+            g.setCharacteristicNotification(characteristic, true)
+            val descriptor = characteristic.getDescriptor(CCCD_UUID) ?: return false
             @Suppress("DEPRECATION")
             descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            @Suppress("DEPRECATION")
-            g.writeDescriptor(descriptor)
-            onStatus("Connected to $DEVICE_NAME")
+            val wasIdle = descriptorWriteQueue.isEmpty()
+            descriptorWriteQueue.addLast(descriptor)
+            if (wasIdle) {
+                @Suppress("DEPRECATION")
+                g.writeDescriptor(descriptor)
+            }
+            return true
+        }
+
+        @SuppressLint("MissingPermission")
+        @Suppress("DEPRECATION")
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                Log.w(TAG, "Descriptor write failed for ${descriptor.characteristic.uuid}: status=$status")
+            }
+            descriptorWriteQueue.removeFirstOrNull()
+            val next = descriptorWriteQueue.firstOrNull() ?: return
+            g.writeDescriptor(next)
         }
 
         // Deprecated in API 33, but still the callback the platform actually invokes
@@ -161,8 +191,10 @@ class BleRingClient(
             characteristic: BluetoothGattCharacteristic,
         ) {
             val value = characteristic.value ?: return
-            val event = RingEvent.parse(value) ?: return
-            onRing(event)
+            when (characteristic.uuid) {
+                CHAR_RING_UUID -> RingEvent.parse(value)?.let(onRing)
+                CHAR_BATTERY_UUID -> BatteryStatus.parse(value)?.let(onBattery)
+            }
         }
     }
 }

@@ -18,6 +18,11 @@ specifically for a live demo on a OnePlus 15 Pro (Android 12+) — see
    ring-event path itself — only `SoundPool.play()`.
 4. Auto-reconnects if the connection drops, so the demo can survive walking
    out of range briefly.
+5. Separately (and at low priority — see the firmware header comment),
+   displays battery percentage, an estimated time remaining, and whether
+   the bell is charging / running on USB with no battery installed. This
+   comes from a second, independent BLE characteristic the firmware updates
+   every 5 seconds — it never competes with ring-event delivery.
 
 See [`RingEvent.kt`](app/src/main/java/com/ehb/handbell/RingEvent.kt) for the
 wire format (must match `RingEvent` in `feather_transmitter.ino`), and
@@ -55,6 +60,16 @@ verify one here without the Android tooling installed). To get it building:
   BLE peripherals, to clear any stale connection/bonding state.
 - The on-screen ring counter and last-peak reading are there so you (and the
   audience) can see events land even before the tone finishes playing.
+
+## About the battery reading
+
+The Feather V2 has no fuel-gauge chip, so percentage/charging/no-battery are
+all inferred from one noisy voltage reading on the firmware side — see the
+`BATTERY TELEMETRY` comment at the top of `feather_transmitter.ino`. In
+particular, "Charging" only appears once the firmware has seen voltage
+*rising* over a ~60s window, so it lags a plug-in event by up to a minute;
+a battery resting at or near full charge is reported as a plain percentage
+rather than a guessed charge state.
 
 ## Tuning tone feel
 

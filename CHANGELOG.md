@@ -15,6 +15,11 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   `CONNECTION_PRIORITY_HIGH`, and plays a pre-synthesized bell tone via
   `SoundPool` (velocity-sensitive across three peak-g buckets) with no
   synthesis work on the ring-event hot path. Auto-reconnects on drop.
+- Battery telemetry, sampled at low priority (every 5s, never gating the
+  ring path): percentage, estimated time remaining, and whether the bell is
+  charging / running on USB with no battery — all inferred from a single
+  voltage reading over time, since the Feather V2 has no fuel-gauge chip.
+  Sent over a second BLE characteristic and shown in the Android app.
 
 ## v0.1 — 2026-08-29
 
