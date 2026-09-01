@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
     private data class RingRecord(
         val ringId: Long,
         val peakG: Float,
+        val dynamicLevel: DynamicLevel,
         val totalMs: Long?,
         val bleMs: Long?,
         val appMs: Long?,
@@ -123,8 +124,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun onRing(event: RingEvent, receivedAtElapsedMs: Long, estimatedDetectionAtElapsedMs: Long?) {
         ringCount++
+        val dynamicLevel = DynamicLevel.forPeakG(event.peakG)
         tvRingCount.text = ringCount.toString()
-        tvLastPeak.text = String.format(Locale.US, "Last peak: %.2fg", event.peakG)
+        tvLastPeak.text = String.format(Locale.US, "Last peak: %.2fg (%s)", event.peakG, dynamicLevel.label)
         flashBackground()
 
         // Play immediately — this is the latency-critical path, no extra work before it.
@@ -132,11 +134,12 @@ class MainActivity : AppCompatActivity() {
         val playedAtElapsedMs = SystemClock.elapsedRealtime()
 
         val record = if (estimatedDetectionAtElapsedMs == null) {
-            RingRecord(event.ringId, event.peakG, null, null, null)
+            RingRecord(event.ringId, event.peakG, dynamicLevel, null, null, null)
         } else {
             RingRecord(
                 ringId = event.ringId,
                 peakG = event.peakG,
+                dynamicLevel = dynamicLevel,
                 totalMs = playedAtElapsedMs - estimatedDetectionAtElapsedMs,
                 bleMs = receivedAtElapsedMs - estimatedDetectionAtElapsedMs,
                 appMs = playedAtElapsedMs - receivedAtElapsedMs,
@@ -160,7 +163,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun formatLogLine(r: RingRecord, details: Boolean): String =
-        String.format(Locale.US, "#%-4d %5.2fg  %s", r.ringId, r.peakG, formatLatency(r, details))
+        String.format(
+            Locale.US, "#%-4d %5.2fg %-2s  %s",
+            r.ringId, r.peakG, r.dynamicLevel.label, formatLatency(r, details),
+        )
 
     private fun refreshLogDisplay() {
         ringLogAdapter.clear()

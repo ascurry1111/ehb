@@ -11,11 +11,11 @@ specifically for a live demo on a OnePlus 15 Pro (Android 12+) — see
    device named `WirelessHandbell`.
 2. Connects, requests `CONNECTION_PRIORITY_HIGH` (Android's fastest public
    connection-interval hint), and subscribes to ring notifications.
-3. On each ring, synthesizes-ahead-of-time bell tones (three "strength"
-   buckets — light/medium/hard, matching `peakMilliG`) are played via
-   `SoundPool`, which is the low-latency-appropriate Android API for short,
-   frequently-retriggered sounds. No audio synthesis happens on the
-   ring-event path itself — only `SoundPool.play()`.
+3. On each ring, plays a synthesized-ahead-of-time bell tone via `SoundPool`
+   (the low-latency-appropriate Android API for short, frequently-retriggered
+   sounds — no audio synthesis happens on the ring-event path itself, only
+   `SoundPool.play()`), picking both tone and volume from the six musical
+   dynamic levels (pp–ff) in [`DynamicLevel.kt`](app/src/main/java/com/ehb/handbell/DynamicLevel.kt).
 4. Auto-reconnects if the connection drops, so the demo can survive walking
    out of range briefly.
 5. Separately (and at low priority — see the firmware header comment),
@@ -109,9 +109,28 @@ particular, "Charging" only appears once the firmware has seen voltage
 a battery resting at or near full charge is reported as a plain percentage
 rather than a guessed charge state.
 
-## Tuning tone feel
+## Dynamics (volume) and tuning tone feel
 
-`RingPlayer.BUCKETS` in `RingPlayer.kt` controls the velocity-sensitivity
-mapping (peak-g thresholds → synthesized tone strength). Adjust those, or the
-tone shape itself in `synthesizeBellTone()`, to match how the bell actually
-feels when swung by hand.
+Every ring is classified into one of six musical dynamic levels — pianissimo
+through fortissimo — by [`DynamicLevel.kt`](app/src/main/java/com/ehb/handbell/DynamicLevel.kt),
+which evenly divides the bell's observed realistic peak range (1.6g–5.0g,
+from ring-log data) into six bands. The detected level (e.g. `mf`) is shown
+next to the peak-g reading and in the ring log.
+
+`DynamicLevel` is the single source of truth for both display and audio —
+`RingPlayer` uses the same six levels for tone shape (brighter/longer at
+higher levels) *and* playback volume, so they can't drift out of sync. Volume
+is spread geometrically (equal ratio between consecutive levels) from 0.08 to
+1.00, roughly 22dB pp-to-ff — deliberately wide, since equal *linear* steps
+sound bunched up at the loud end to the ear, and an earlier version's volume
+had no audible difference between levels at all (a per-buffer normalization
+step was quietly canceling out the loudness scaling — see the comment atop
+`RingPlayer.kt`).
+
+To retune:
+- **Dynamic boundaries** — adjust the g-value bands in `DynamicLevel.kt` if
+  1.6g–5.0g stops matching what you observe in the ring log.
+- **Volume spread** — adjust the six `volume` values on `DynamicLevel`'s
+  entries directly (they're literals, not computed, so just edit them).
+- **Tone shape** — `synthesizeBellTone()` in `RingPlayer.kt`, driven by
+  `representativePeakG` per level.

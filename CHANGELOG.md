@@ -39,6 +39,14 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   latency defaults to just the total, tap it to toggle the breakdown; added
   a scrolling ring log (newest first, same info as "last ring") with a
   Clear control.
+- Expanded from three ad-hoc tone "buckets" to the six standard musical
+  dynamic levels (pp–ff), evenly spread across the bell's observed realistic
+  peak range (1.6g–5.0g). New `DynamicLevel.kt` is the single source of
+  truth for both tone/volume (`RingPlayer`) and the detected-dynamic display
+  (shown next to peak-g and in the ring log). Also fixed a real bug where
+  playback volume never actually varied between levels — a per-buffer
+  normalization step was canceling out the loudness scaling, leaving only a
+  timbre difference — and widened the volume spread to ~22dB pp-to-ff.
 
 ## v0.1 — 2026-08-29
 

@@ -14,14 +14,24 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * Plays a synthesized bell tone on each ring, with a bit of velocity
- * sensitivity (harder swings -> brighter/louder tone), mirroring
- * bell_tone() in firmware/receiver_tests/pc_ble_listener.py.
+ * Plays a synthesized bell tone on each ring, with velocity sensitivity —
+ * harder swings get a brighter/longer tone AND are audibly louder — mapped
+ * onto the six musical dynamic levels in DynamicLevel.kt.
  *
- * All tones are synthesized ONCE up front (a handful of "strength buckets")
- * and handed to SoundPool, which is the low-latency-appropriate API for
- * short, frequently-retriggered sound effects on Android. No synthesis or
- * file I/O happens on the ring-event hot path — only soundPool.play().
+ * All tones are synthesized ONCE up front (one per DynamicLevel) and handed
+ * to SoundPool, which is the low-latency-appropriate API for short,
+ * frequently-retriggered sound effects on Android. No synthesis or file I/O
+ * happens on the ring-event hot path — only soundPool.play().
+ *
+ * NOTE on loudness: the synthesized buffer itself is normalized to the same
+ * peak amplitude for every level (see synthesizeBellTone) — that's a
+ * deliberate choice to use the full 16-bit range for audio quality at every
+ * level, NOT the mechanism for volume differences. Loudness comes entirely
+ * from DynamicLevel.volume, passed to SoundPool.play() below. (An earlier
+ * version scaled the waveform by strength before that per-buffer
+ * normalization, which just renormalized it straight back out — the buckets
+ * had different timbre but were all played back at the same volume, which is
+ * why they were hard to tell apart.)
  */
 class RingPlayer(private val context: Context) {
 
@@ -30,13 +40,6 @@ class RingPlayer(private val context: Context) {
         const val SAMPLE_RATE = 44100
         const val DURATION_S = 0.9
         const val BASE_FREQ_HZ = 880.0
-
-        // (upper bound of peakG for this bucket, representative peakG used to synthesize it)
-        val BUCKETS = listOf(
-            2.0f to 1.6f,   // light tap
-            3.5f to 2.7f,   // medium swing
-            Float.MAX_VALUE to 4.5f, // hard ring
-        )
     }
 
     private val soundPool = SoundPool.Builder()
@@ -50,20 +53,20 @@ class RingPlayer(private val context: Context) {
         )
         .build()
 
-    @Volatile private var soundIds: List<Int> = emptyList()
+    @Volatile private var soundIdByLevel: Map<DynamicLevel, Int> = emptyMap()
     @Volatile private var ready = false
 
-    /** Synthesizes and loads all tone buckets. Call once, off the main thread is fine
-     *  (this constructor kicks off a background thread itself). */
+    /** Synthesizes and loads one tone per DynamicLevel. Call once, off the main thread is
+     *  fine (this constructor kicks off a background thread itself). */
     fun prepare() {
         Thread({
-            val ids = BUCKETS.map { (_, representativePeakG) ->
-                val samples = synthesizeBellTone(representativePeakG)
+            val ids = DynamicLevel.entries.associateWith { level ->
+                val samples = synthesizeBellTone(level.representativePeakG)
                 val file = File.createTempFile("bell_tone_", ".wav", context.cacheDir)
                 writeWavFile(file, samples, SAMPLE_RATE)
                 soundPool.load(file.absolutePath, 1)
             }
-            soundIds = ids
+            soundIdByLevel = ids
             ready = true
             Log.i(TAG, "Loaded ${ids.size} tone variants.")
         }, "RingPlayer-prepare").start()
@@ -76,10 +79,9 @@ class RingPlayer(private val context: Context) {
             Log.w(TAG, "play() called before tones finished loading — dropping.")
             return
         }
-        val bucketIndex = BUCKETS.indexOfFirst { (upperBound, _) -> peakG < upperBound }
-            .let { if (it < 0) BUCKETS.size - 1 else it }
-        val soundId = soundIds.getOrNull(bucketIndex) ?: return
-        soundPool.play(soundId, 1f, 1f, /* priority = */ 1, /* loop = */ 0, /* rate = */ 1f)
+        val level = DynamicLevel.forPeakG(peakG)
+        val soundId = soundIdByLevel[level] ?: return
+        soundPool.play(soundId, level.volume, level.volume, /* priority = */ 1, /* loop = */ 0, /* rate = */ 1f)
     }
 
     fun release() {
