@@ -35,12 +35,32 @@
         the bell can't ring it — the same asymmetry the clapper springs give
         a real bell, for free.
       - Multiple rings per swing: after a ring the detector must see velocity
-        fall back below SWING_RELEASE_VELOCITY before it can re-arm, on top
-        of REFRACTORY_MS.
+        fall back below RELEASE_VELOCITY before it can re-arm, on top of
+        REFRACTORY_MS.
 
     IMPORTANT — set FORWARD_AXIS/FORWARD_SIGN below to match how your LIS3DH
     is actually mounted, or none of this works. Set CALIBRATION_MODE 1 and
     follow the procedure there; it takes about 30 seconds.
+
+  SUSTAIN AND MUTE — v0.4
+    A real handbell keeps ringing after the strike until it naturally damps
+    out, or until the ringer brings it to their body to stop it (touching the
+    casting kills the vibration). The Android app now plays a multi-second
+    decaying tone per ring rather than a short fixed blip, so this firmware
+    needs to tell it when to cut that tone off early.
+
+    Mute is detected as the mirror image of ring detection: a BACKWARD swing
+    (negative forward velocity — the same direction the clapper springs
+    forbid for ringing) followed by a sudden stop, the way bringing the bell
+    to your chest/shoulder actually looks to the accelerometer. It's a
+    separate BLE characteristic (BLE_CHAR_MUTE_UUID) rather than a field on
+    RingEvent, since it's a genuinely different signal — "stop whatever is
+    currently sounding," not "a new strike happened."
+
+    The two gestures share one state machine (RING_IDLE / RING_ARMED_FORWARD
+    / RING_ARMED_BACKWARD / RING_SETTLING) since forwardVelocity can't be
+    both positive and negative at once — arming one direction is naturally
+    exclusive with the other.
 
   v0.2 NOTE — this variant drops ESP-NOW/WiFi entirely. It was built for a
   live demo where the receiver is an Android phone (Android has no ESP-NOW
@@ -147,11 +167,13 @@
 //         FORWARD_SIGN -1.0 (expected here), positive means +1.0.
 //       - Confirm: vFwd should go strongly POSITIVE on a forward swing. If it
 //         goes negative, flip FORWARD_SIGN.
-//   2 = swing trace (rings still fire) — streams the forward acceleration and
-//       velocity profile whenever the bell is moving, so the thresholds below
-//       can be set from real numbers. Ring a few times normally, then
-//       deliberately do the things that should NOT ring (pick it up, tap the
-//       handle, tilt it forward slowly) and compare the traces.
+//   2 = swing trace (rings/mutes still fire) — streams the forward
+//       acceleration and velocity profile whenever the bell is moving, so the
+//       thresholds below can be set from real numbers. Ring a few times
+//       normally, mute a few times (swing back to the body and stop), then
+//       deliberately do the things that should NOT trigger either (pick it
+//       up, tap the handle, tilt it slowly in each direction) and compare
+//       the peakV/state trace across all of them.
 #define CALIBRATION_MODE 0
 
 // --- Ring detection tuning -------------------------------------------------
@@ -192,13 +214,26 @@
 // are being missed.
 #define SWING_ARM_VELOCITY      0.70f
 
-// Velocity must fall back below this (m/s) before another ring can arm.
-#define SWING_RELEASE_VELOCITY  0.25f
+// Backward speed (m/s) the bell must reach before a stop counts as a mute —
+// i.e. bringing the bell toward the body with real intent, not just easing
+// off a swing. Same tuning knobs apply as SWING_ARM_VELOCITY, in reverse.
+#define MUTE_ARM_VELOCITY       0.70f
+
+// Velocity must fall back below this (m/s), in whichever direction was
+// armed, before the detector releases and can re-arm.
+#define RELEASE_VELOCITY        0.25f
 
 // Deceleration (m/s^2, opposing the swing) that counts as "the bell stopped".
 // ~15 m/s^2 is about 1.5g. RAISE THIS if soft stops ring; LOWER it if you
 // have to stop the bell unnaturally hard to get a ring.
 #define STOP_DECEL_THRESHOLD    15.0f
+
+// Deceleration (m/s^2, opposing the backward motion) that counts as "the
+// bell was pressed to a stop" for muting. Defaults to the same magnitude as
+// STOP_DECEL_THRESHOLD as a starting point — contacting the body is a
+// similarly abrupt motion — but tune independently with CALIBRATION_MODE 2
+// if it turns out to feel different (e.g. a soft chest vs. a firm shoulder).
+#define MUTE_STOP_DECEL_THRESHOLD 15.0f
 
 // Below this linear acceleration (m/s^2) the bell is considered at rest, and
 // after REST_SAMPLES_REQUIRED consecutive samples the velocity integrator is
@@ -206,7 +241,7 @@
 #define REST_ACCEL_THRESHOLD    0.60f
 #define REST_SAMPLES_REQUIRED   40     // 100ms at 400Hz
 
-#define REFRACTORY_MS           250    // minimum gap between two ring events
+#define REFRACTORY_MS           250    // minimum gap after a ring/mute before another can fire
 
 // Random-but-fixed UUIDs for the BLE service/characteristic. Must match the
 // UUIDs the Android app scans/subscribes for (see android/.../RingEvent.kt).
@@ -215,6 +250,7 @@
 #define BLE_CHAR_RING_UUID    "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_BATTERY_UUID "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_TIME_UUID    "6e400004-b5a3-f393-e0a9-e50e24dcca9e"
+#define BLE_CHAR_MUTE_UUID    "6e400005-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_DEVICE_NAME       "WirelessHandbell"
 
 // Preferred connection parameters, requested as soon as a central connects.
@@ -249,19 +285,24 @@ NimBLEServer* bleServer = nullptr;
 NimBLECharacteristic* ringCharacteristic = nullptr;
 NimBLECharacteristic* batteryCharacteristic = nullptr;
 NimBLECharacteristic* timeCharacteristic = nullptr;
+NimBLECharacteristic* muteCharacteristic = nullptr;
 bool bleClientConnected = false;
 
 uint32_t ringCounter = 0;
 
-// --- Ring detection state --------------------------------------------------
+// --- Ring/mute detection state ----------------------------------------------
+// One state machine for both gestures: forwardVelocity can't be positive and
+// negative at once, so arming a swing in one direction is naturally exclusive
+// with the other. See the SUSTAIN AND MUTE header comment.
 enum RingState : uint8_t {
-  RING_IDLE,        // waiting for a real forward swing to build up
-  RING_SWINGING,    // armed: bell is moving forward fast enough to ring on a stop
-  RING_REFRACTORY,  // just rang; waiting for the swing to settle before re-arming
+  RING_IDLE,             // watching for either direction to build up
+  RING_ARMED_FORWARD,    // armed: moving forward fast enough to ring on a stop
+  RING_ARMED_BACKWARD,   // armed: moving backward fast enough to mute on a stop
+  RING_SETTLING,         // just fired (ring or mute); waiting for the swing to settle
 };
 
 RingState ringState = RING_IDLE;
-unsigned long refractoryUntilMs = 0;
+unsigned long settleUntilMs = 0;
 unsigned long lastSampleUs = 0;
 
 // Running gravity estimate (low-pass filtered raw acceleration).
@@ -269,9 +310,12 @@ bool gravityInitialized = false;
 float gravityX = 0, gravityY = 0, gravityZ = 0;
 
 // Leaky-integrated forward velocity, and per-swing peaks for the ring payload.
+// peakSwingVelocity tracks SPEED (magnitude), not signed velocity -- it needs
+// to mean something for both a forward swing (positive) and a backward mute
+// swing (negative).
 float forwardVelocity = 0;
 float peakLinearAccel = 0;
-float peakForwardVelocity = 0;
+float peakSwingVelocity = 0;
 int restSamples = 0;
 
 // Wire-format packet sent as the BLE notify payload.
@@ -281,6 +325,14 @@ typedef struct __attribute__((packed)) {
   uint16_t peakMilliG;    // peak acceleration magnitude in milli-g (for velocity-sensitive tone)
   uint32_t timestampMs;   // millis() at time of detection, for latency diagnostics
 } RingEvent;
+
+// Wire-format packet sent as the mute notify payload. Deliberately minimal —
+// a mute is a pure "stop sounding" signal, not a new strike, so it doesn't
+// need peak/dynamic info. The timestamp is kept for future latency
+// diagnostics symmetry with RingEvent, even though nothing consumes it yet.
+typedef struct __attribute__((packed)) {
+  uint32_t timestampMs;
+} MuteEvent;
 
 // Must match BatteryState in BatteryStatus.kt on the Android side.
 enum BatteryState : uint8_t {
@@ -449,10 +501,11 @@ void setup() {
   Serial.println("not Z. Then swing forward and confirm vFwd goes POSITIVE.");
   Serial.println("See the notes above CALIBRATION_MODE in this sketch.\n");
 #elif CALIBRATION_MODE == 2
-  Serial.println("\n*** CALIBRATION MODE 2 (swing trace) — rings still fire. ***");
-  Serial.println("Traces while moving. Ring normally a few times, then try the");
-  Serial.println("things that should NOT ring (pick up, tap handle, slow tilt)");
-  Serial.println("and compare peakV against SWING_ARM_VELOCITY.\n");
+  Serial.println("\n*** CALIBRATION MODE 2 (swing trace) — rings/mutes still fire. ***");
+  Serial.println("Traces while moving. Ring and mute normally a few times, then try");
+  Serial.println("things that should NOT trigger either (pick up, tap handle, slow");
+  Serial.println("tilt either way) and compare peakV against SWING_ARM_VELOCITY /");
+  Serial.println("MUTE_ARM_VELOCITY.\n");
 #endif
 
   // --- BLE (NimBLE) ---
@@ -473,6 +526,9 @@ void setup() {
       BLE_CHAR_TIME_UUID,
       NIMBLE_PROPERTY::READ);
   timeCharacteristic->setCallbacks(new TimeCharacteristicCallbacks());
+  muteCharacteristic = service->createCharacteristic(
+      BLE_CHAR_MUTE_UUID,
+      NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
   service->start();
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
@@ -513,15 +569,27 @@ void emitRing(unsigned long nowMs) {
   evt.timestampMs = nowMs;
 
   Serial.printf("RING #%lu  peak=%.2fg  swing=%.2fm/s\n",
-                (unsigned long)evt.ringId, evt.peakMilliG / 1000.0f, peakForwardVelocity);
+                (unsigned long)evt.ringId, evt.peakMilliG / 1000.0f, peakSwingVelocity);
 
   if (bleClientConnected && ringCharacteristic) {
     ringCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
     ringCharacteristic->notify();
   }
+}
 
-  peakLinearAccel = 0;
-  peakForwardVelocity = 0;
+// ---------------------------------------------------------------------------
+// MUTE EMISSION — see SUSTAIN AND MUTE in the header comment
+// ---------------------------------------------------------------------------
+void emitMute(unsigned long nowMs) {
+  MuteEvent evt;
+  evt.timestampMs = nowMs;
+
+  Serial.printf("MUTE  swing=%.2fm/s\n", peakSwingVelocity);
+
+  if (bleClientConnected && muteCharacteristic) {
+    muteCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
+    muteCharacteristic->notify();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -582,7 +650,7 @@ void loop() {
   }
 
   if (linMag > peakLinearAccel) peakLinearAccel = linMag;
-  if (forwardVelocity > peakForwardVelocity) peakForwardVelocity = forwardVelocity;
+  if (fabsf(forwardVelocity) > peakSwingVelocity) peakSwingVelocity = fabsf(forwardVelocity);
 
 #if CALIBRATION_MODE == 1
   static unsigned long lastCalPrintMs = 0;
@@ -601,45 +669,64 @@ void loop() {
     if (linMag >= REST_ACCEL_THRESHOLD && nowMs - lastTracePrintMs >= 20) {
       lastTracePrintMs = nowMs;
       Serial.printf("aFwd=%7.2f  vFwd=%6.2f  peakV=%6.2f  state=%s\n",
-                    aForward, forwardVelocity, peakForwardVelocity,
-                    ringState == RING_IDLE       ? "idle"
-                    : ringState == RING_SWINGING ? "ARMED"
-                                                 : "refrac");
+                    aForward, forwardVelocity, peakSwingVelocity,
+                    ringState == RING_IDLE           ? "idle"
+                    : ringState == RING_ARMED_FORWARD  ? "ARMED-fwd"
+                    : ringState == RING_ARMED_BACKWARD ? "ARMED-bwd"
+                                                       : "settling");
     }
   }
 #endif
   // --- Swing / stop state machine ------------------------------------------
   switch (ringState) {
     case RING_IDLE:
-      // Arm only once the bell is genuinely travelling forward. A tap on the
-      // handle spikes acceleration but nets ~zero velocity, so it stops here.
+      // Arm only once the bell is genuinely travelling with real intent, in
+      // either direction. A tap on the handle spikes acceleration but nets
+      // ~zero velocity, so it stops here regardless of direction.
       if (forwardVelocity >= SWING_ARM_VELOCITY) {
-        ringState = RING_SWINGING;
+        ringState = RING_ARMED_FORWARD;
+      } else if (forwardVelocity <= -MUTE_ARM_VELOCITY) {
+        ringState = RING_ARMED_BACKWARD;
       }
       break;
 
-    case RING_SWINGING:
+    case RING_ARMED_FORWARD:
       if (aForward <= -STOP_DECEL_THRESHOLD) {
         // Sharp deceleration opposing the swing: the bell has been stopped,
         // which is the moment a real clapper would strike.
         emitRing(nowMs);
-        ringState = RING_REFRACTORY;
-        refractoryUntilMs = nowMs + REFRACTORY_MS;
-      } else if (forwardVelocity < SWING_RELEASE_VELOCITY) {
+        ringState = RING_SETTLING;
+        settleUntilMs = nowMs + REFRACTORY_MS;
+      } else if (forwardVelocity < RELEASE_VELOCITY) {
         // Swing petered out without a definite stop — no ring.
         ringState = RING_IDLE;
         peakLinearAccel = 0;
-        peakForwardVelocity = 0;
+        peakSwingVelocity = 0;
       }
       break;
 
-    case RING_REFRACTORY:
-      // Require BOTH the refractory window to expire and the swing to actually
-      // settle, so one vigorous motion can't produce a burst of rings.
-      if (nowMs >= refractoryUntilMs && forwardVelocity < SWING_RELEASE_VELOCITY) {
+    case RING_ARMED_BACKWARD:
+      if (aForward >= MUTE_STOP_DECEL_THRESHOLD) {
+        // Sharp deceleration opposing the backward motion: the bell has been
+        // pressed to a stop, same as touching the casting on a real handbell.
+        emitMute(nowMs);
+        ringState = RING_SETTLING;
+        settleUntilMs = nowMs + REFRACTORY_MS;
+      } else if (forwardVelocity > -RELEASE_VELOCITY) {
+        // Backward motion petered out without a definite stop — no mute.
         ringState = RING_IDLE;
         peakLinearAccel = 0;
-        peakForwardVelocity = 0;
+        peakSwingVelocity = 0;
+      }
+      break;
+
+    case RING_SETTLING:
+      // Require BOTH the settle window to expire and the swing to actually
+      // die down, so one vigorous motion can't produce a burst of events.
+      if (nowMs >= settleUntilMs && fabsf(forwardVelocity) < RELEASE_VELOCITY) {
+        ringState = RING_IDLE;
+        peakLinearAccel = 0;
+        peakSwingVelocity = 0;
       }
       break;
   }

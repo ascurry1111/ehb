@@ -47,6 +47,21 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   playback volume never actually varied between levels — a per-buffer
   normalization step was canceling out the loudness scaling, leaving only a
   timbre difference — and widened the volume spread to ~22dB pp-to-ff.
+  (Known open issue: dynamic level still varies noticeably between rings
+  that feel identical by hand — see `firmware/README.md`'s tuning-TODO list.)
+- Sustain and mute: tones now ring out for several seconds with a natural
+  decay (longer for louder dynamics) instead of a ~1s fixed blip, and a new
+  **mute** gesture — swing the bell backward toward the body, then stop it,
+  the mirror image of ring detection — cuts the tone short, modeling how a
+  real handbell is damped by pressing it to the chest/shoulder. New
+  `BLE_CHAR_MUTE_UUID` characteristic; ring/mute detection now share one
+  state machine (`RING_IDLE`/`RING_ARMED_FORWARD`/`RING_ARMED_BACKWARD`/
+  `RING_SETTLING`) since a swing can't be armed in both directions at once.
+  The bell is treated as physically monophonic on the Android side — a new
+  ring replaces whatever's currently sounding rather than layering. Also
+  fixed a latent bug found while extending this: the old peak-velocity
+  tracker only ever recorded positive (forward) values, so it read ~0 during
+  a backward swing.
 
 ## v0.1 — 2026-08-29
 

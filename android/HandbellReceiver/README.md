@@ -16,6 +16,8 @@ specifically for a live demo on a OnePlus 15 Pro (Android 12+) — see
    sounds — no audio synthesis happens on the ring-event path itself, only
    `SoundPool.play()`), picking both tone and volume from the six musical
    dynamic levels (pp–ff) in [`DynamicLevel.kt`](app/src/main/java/com/ehb/handbell/DynamicLevel.kt).
+   The tone is a several-second natural decay, not a short blip — see
+   "Sustain and mute" below.
 4. Auto-reconnects if the connection drops, so the demo can survive walking
    out of range briefly.
 5. Separately (and at low priority — see the firmware header comment),
@@ -108,6 +110,24 @@ particular, "Charging" only appears once the firmware has seen voltage
 *rising* over a ~60s window, so it lags a plug-in event by up to a minute;
 a battery resting at or near full charge is reported as a plain percentage
 rather than a guessed charge state.
+
+## Sustain and mute
+
+A real handbell keeps ringing after the strike until it naturally damps out,
+or until the ringer presses it to their body to stop it. `RingPlayer` models
+this: each tone is a multi-second decaying sustain (`DURATION_S`/
+`BASE_DECAY_RATE`/`DECAY_RATE_SPREAD` in `RingPlayer.kt` — louder dynamics
+ring out longer, same as a real bell has more energy to dissipate), and
+`mute()` cuts it off early with a quick fade (~40ms — fast enough to feel
+immediate, slow enough to avoid a click) when the firmware reports the
+backward-swing-then-stop mute gesture over its own BLE characteristic.
+
+The bell is physically monophonic — one casting, one vibration state — so a
+new ring always replaces whatever's currently sounding rather than layering a
+second independent tone on top of it. Ring again mid-decay (without muting
+first) and you'll hear the new strike cut the old one off, not overlap it —
+which also matches normal handbell technique, where you don't have to mute
+between every ring.
 
 ## Dynamics (volume) and tuning tone feel
 

@@ -3,6 +3,8 @@ package com.ehb.handbell
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.SoundPool
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
@@ -17,6 +19,13 @@ import kotlin.math.sin
  * Plays a synthesized bell tone on each ring, with velocity sensitivity —
  * harder swings get a brighter/longer tone AND are audibly louder — mapped
  * onto the six musical dynamic levels in DynamicLevel.kt.
+ *
+ * A real handbell keeps ringing after the strike until it naturally damps out
+ * or the ringer stops it against their body, so each tone is a multi-second
+ * natural decay rather than a short fixed blip -- see DURATION_S and the
+ * decay-rate constants below. mute() cuts it short on demand (the app calls
+ * this when the firmware reports the backward-swing-then-stop mute gesture;
+ * see BLE_CHAR_MUTE_UUID in feather_transmitter.ino).
  *
  * All tones are synthesized ONCE up front (one per DynamicLevel) and handed
  * to SoundPool, which is the low-latency-appropriate API for short,
@@ -37,9 +46,40 @@ class RingPlayer(private val context: Context) {
 
     private companion object {
         const val TAG = "RingPlayer"
-        const val SAMPLE_RATE = 44100
-        const val DURATION_S = 0.9
+        // Lower than CD quality on purpose: the tone's harmonic content tops out
+        // around 4kHz (see synthesizeBellTone), so 22050Hz is well above Nyquist
+        // for it, and halving the sample rate roughly halves both the synthesis
+        // time and cache file size -- which matters more now that buffers run
+        // several seconds instead of under one.
+        const val SAMPLE_RATE = 22050
         const val BASE_FREQ_HZ = 880.0
+
+        // Buffer length. Generous relative to how long the decay actually takes
+        // (see BASE_DECAY_RATE below) so every level reaches near-silence well
+        // before the buffer ends -- avoids any click from an abrupt cutoff at a
+        // non-zero sample, on top of the explicit fade-to-zero tail below.
+        const val DURATION_S = 9.0
+
+        // Decay rate (per second) of the amplitude envelope: exp(-rate * t).
+        // Louder dynamics decay more slowly (ring out longer), same as a real
+        // bell has more energy to dissipate from a harder strike.
+        //   rate = BASE_DECAY_RATE + DECAY_RATE_SPREAD * (1 - strength)
+        // With this bell's actual strength range (~0.18 pp to ~0.74 ff, see
+        // synthesizeBellTone), that puts the "effectively silent" point
+        // (-40dB, envelope 0.01) at roughly 3.4s for pp and 5.5s for ff.
+        const val BASE_DECAY_RATE = 0.6
+        const val DECAY_RATE_SPREAD = 0.9
+
+        // Safety-net linear fade over the last stretch of every buffer, so the
+        // sample value is exactly zero at the end regardless of how the decay
+        // math above worked out -- belt and suspenders against any click.
+        const val TAIL_FADE_S = 0.05
+
+        // Mute fade: quick enough to feel like an immediate stop (matching a
+        // real handbell being pressed to the body), but long enough that
+        // stopping mid-waveform doesn't produce an audible click.
+        const val MUTE_FADE_STEPS = 5
+        const val MUTE_FADE_STEP_MS = 8L
     }
 
     private val soundPool = SoundPool.Builder()
@@ -53,8 +93,16 @@ class RingPlayer(private val context: Context) {
         )
         .build()
 
+    private val fadeHandler = Handler(Looper.getMainLooper())
+
     @Volatile private var soundIdByLevel: Map<DynamicLevel, Int> = emptyMap()
     @Volatile private var ready = false
+
+    // The bell is physically monophonic -- only one casting, one vibration
+    // state -- so a new ring replaces whatever's currently sounding rather
+    // than layering another independent voice on top of it.
+    @Volatile private var activeStreamId: Int? = null
+    @Volatile private var activeVolume: Float = 0f
 
     /** Synthesizes and loads one tone per DynamicLevel. Call once, off the main thread is
      *  fine (this constructor kicks off a background thread itself). */
@@ -79,24 +127,59 @@ class RingPlayer(private val context: Context) {
             Log.w(TAG, "play() called before tones finished loading — dropping.")
             return
         }
+        // A new strike replaces the currently sounding tone -- see the
+        // monophonic note on activeStreamId above. Stop unconditionally
+        // (no fade): the new tone's own attack transient masks any click,
+        // and this is the ring-event hot path, so keep it to one cheap call.
+        activeStreamId?.let { soundPool.stop(it) }
+        fadeHandler.removeCallbacksAndMessages(null) // cancel any in-flight mute fade
+
         val level = DynamicLevel.forPeakG(peakG)
         val soundId = soundIdByLevel[level] ?: return
-        soundPool.play(soundId, level.volume, level.volume, /* priority = */ 1, /* loop = */ 0, /* rate = */ 1f)
+        activeStreamId = soundPool.play(soundId, level.volume, level.volume, /* priority = */ 1, /* loop = */ 0, /* rate = */ 1f)
+        activeVolume = level.volume
+    }
+
+    /** Stop whatever's currently ringing, quickly but without a click. Call when the
+     *  firmware reports the backward-swing-then-stop mute gesture. Safe to call when
+     *  nothing is playing (no-op). */
+    fun mute() {
+        // Deliberately leaves activeStreamId set until the fade actually finishes
+        // (rather than nulling it here) -- so if play() is called again mid-fade,
+        // it still finds this stream and hard-stops it, instead of the pending
+        // fade steps below getting cancelled and leaking a stuck, quiet-but-not-
+        // silent stream.
+        val streamId = activeStreamId ?: return
+        val startVolume = activeVolume
+        fadeHandler.removeCallbacksAndMessages(null)
+        for (step in 1..MUTE_FADE_STEPS) {
+            fadeHandler.postDelayed({
+                val v = startVolume * (1f - step.toFloat() / MUTE_FADE_STEPS)
+                soundPool.setVolume(streamId, v, v)
+                if (step == MUTE_FADE_STEPS) {
+                    soundPool.stop(streamId)
+                    if (activeStreamId == streamId) activeStreamId = null
+                }
+            }, step * MUTE_FADE_STEP_MS)
+        }
     }
 
     fun release() {
+        fadeHandler.removeCallbacksAndMessages(null)
         soundPool.release()
     }
 
-    /** Same shape as bell_tone() in pc_ble_listener.py: a decaying sine + two harmonics. */
+    /** Same shape as bell_tone() in pc_ble_listener.py: a decaying sine + two harmonics,
+     *  extended with a much longer natural decay -- see the constants above. */
     private fun synthesizeBellTone(peakG: Double): ShortArray {
         val n = (SAMPLE_RATE * DURATION_S).toInt()
         val strength = min(1.0, max(0.15, (peakG - 1.0) / 5.0))
+        val decayRate = BASE_DECAY_RATE + DECAY_RATE_SPREAD * (1 - strength)
         val raw = DoubleArray(n)
         var maxAbs = 1e-9
         for (i in 0 until n) {
             val t = i.toDouble() / SAMPLE_RATE
-            val envelope = exp(-t * (2.5 + 1.5 * (1 - strength)))
+            val envelope = exp(-t * decayRate)
             var s = 1.00 * sin(2 * PI * BASE_FREQ_HZ * t) +
                 0.35 * strength * sin(2 * PI * BASE_FREQ_HZ * 2.4 * t) +
                 0.15 * strength * sin(2 * PI * BASE_FREQ_HZ * 4.1 * t)
@@ -104,6 +187,16 @@ class RingPlayer(private val context: Context) {
             raw[i] = s
             maxAbs = max(maxAbs, abs(s))
         }
+
+        // Explicit fade-to-zero over the tail, on top of the natural exponential
+        // decay -- guarantees no click at the buffer's end regardless of how
+        // quiet the decay math actually got by then.
+        val tailSamples = (SAMPLE_RATE * TAIL_FADE_S).toInt().coerceAtMost(n)
+        for (i in 0 until tailSamples) {
+            val fade = i.toDouble() / tailSamples
+            raw[n - tailSamples + i] *= fade
+        }
+
         val out = ShortArray(n)
         for (i in 0 until n) {
             val normalized = (raw[i] / maxAbs) * 0.8

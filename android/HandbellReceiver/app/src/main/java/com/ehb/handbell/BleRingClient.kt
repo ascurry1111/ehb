@@ -49,6 +49,10 @@ class BleRingClient(
      * offset -- null if we haven't completed a clock sync yet.
      */
     private val onRing: (event: RingEvent, receivedAtElapsedMs: Long, estimatedDetectionAtElapsedMs: Long?) -> Unit,
+    /** Fired when the firmware detects the backward-swing-then-stop mute gesture --
+     *  see BLE_CHAR_MUTE_UUID in feather_transmitter.ino. No payload needed; it's a
+     *  pure "stop whatever is sounding" signal. */
+    private val onMute: () -> Unit,
 ) {
     private companion object {
         const val TAG = "BleRingClient"
@@ -57,6 +61,7 @@ class BleRingClient(
         val CHAR_RING_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
         val CHAR_BATTERY_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
         val CHAR_TIME_UUID: UUID = UUID.fromString("6e400004-b5a3-f393-e0a9-e50e24dcca9e")
+        val CHAR_MUTE_UUID: UUID = UUID.fromString("6e400005-b5a3-f393-e0a9-e50e24dcca9e")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val RESCAN_DELAY_MS = 1000L
     }
@@ -204,12 +209,20 @@ class BleRingClient(
 
             enableNotify(g, ringChar)
 
-            // Battery telemetry is a nice-to-have — don't fail the connection over it.
+            // Battery telemetry and mute are both nice-to-haves — don't fail the
+            // connection over either.
             val batteryChar = service.getCharacteristic(CHAR_BATTERY_UUID)
             if (batteryChar == null) {
                 Log.w(TAG, "Battery characteristic not found")
             } else {
                 enableNotify(g, batteryChar)
+            }
+
+            val muteChar = service.getCharacteristic(CHAR_MUTE_UUID)
+            if (muteChar == null) {
+                Log.w(TAG, "Mute characteristic not found")
+            } else {
+                enableNotify(g, muteChar)
             }
 
             onStatus("Connected to $DEVICE_NAME")
@@ -284,6 +297,7 @@ class BleRingClient(
                     onRing(event, receivedAt, estimatedDetectionAt)
                 }
                 CHAR_BATTERY_UUID -> BatteryStatus.parse(value)?.let(onBattery)
+                CHAR_MUTE_UUID -> onMute()
             }
         }
     }

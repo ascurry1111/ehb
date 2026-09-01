@@ -46,13 +46,21 @@ If you have the STEMMA QT versions of both boards, just use the STEMMA QT cable 
 5. **Test the ESP-NOW → PC path**: run `pc_serial_listener.py --list` to find the DEVKITC-V4's port, then `pc_serial_listener.py --port <that port>`. Swing the bell — you should hear a tone.
 6. **Test the BLE → PC path**: run `pc_ble_listener.py` (the DEVKITC-V4 isn't involved in this path at all — the Feather talks straight to the PC's Bluetooth radio). Swing the bell — you should hear a tone.
 
-## Ring detection
+## Ring detection and mute
 
 Detection models how a real handbell actually rings — a forward swing followed
 by a **sudden stop** (which is when the clapper catches up and strikes) — rather
 than "acceleration crossed a threshold," which is why earlier versions rang when
 you merely picked the bell up or tapped the handle. See the `RING DETECTION`
 comment at the top of `feather_transmitter.ino` for the full rationale.
+
+A real handbell keeps ringing after the strike until it naturally damps out, or
+until the ringer presses it to their body to stop it. The Android app plays a
+multi-second decaying tone per ring rather than a short blip, and **mute** is
+the gesture that cuts it short: a **backward** swing (toward the body) followed
+by a sudden stop — the mirror image of ring detection, sharing the same state
+machine, since the bell obviously can't be moving forward and backward at once.
+See `SUSTAIN AND MUTE` in the sketch's header comment.
 
 ### Mounting orientation
 
@@ -77,27 +85,31 @@ reflash, open Serial Monitor at 115200:
 ### Then: tune the thresholds
 
 These interact, so change one at a time and watch the `RING #n peak=..g
-swing=..m/s` lines while ringing by hand:
+swing=..m/s` / `MUTE swing=..m/s` lines while ringing and muting by hand:
 
 - `SWING_ARM_VELOCITY` (m/s) — how fast the bell must actually be travelling
   forward before a stop can ring it. **Raise it** if handling still rings the
   bell; **lower it** if genuine swings are missed. Compare against the
   `swing=` figure printed on each ring.
-- `STOP_DECEL_THRESHOLD` (m/s²) — how abruptly the bell must stop. **Raise it**
-  if soft stops ring; **lower it** if you have to stop the bell unnaturally
-  hard.
-- `SWING_RELEASE_VELOCITY` / `REFRACTORY_MS` — raise if one motion produces
-  multiple rings.
+- `STOP_DECEL_THRESHOLD` (m/s²) — how abruptly the bell must stop to ring.
+  **Raise it** if soft stops ring; **lower it** if you have to stop the bell
+  unnaturally hard.
+- `MUTE_ARM_VELOCITY` / `MUTE_STOP_DECEL_THRESHOLD` — the same two knobs for
+  the mute gesture. They default to the same values as their ring
+  counterparts, but tune independently if pressing the bell to your body
+  produces a noticeably different force profile than stopping a forward swing.
+- `RELEASE_VELOCITY` / `REFRACTORY_MS` — shared by both gestures; raise if one
+  motion produces a burst of events.
 
 The defaults are reasoned starting points, not measured ones — expect to adjust
 them against your actual bell.
 
 **Set them from real data rather than guesswork:** `CALIBRATION_MODE 2` streams
 the forward acceleration and velocity profile whenever the bell is moving, with
-rings still firing. Ring normally a few times, then deliberately do the things
-that *shouldn't* ring — pick the bell up, tap the handle, tilt it slowly
-forward — and compare the `peakV` values. Set `SWING_ARM_VELOCITY` in the gap
-between the two groups.
+rings/mutes still firing. Ring and mute normally a few times, then deliberately
+do the things that *shouldn't* trigger either — pick the bell up, tap the
+handle, tilt it slowly in each direction — and compare the `peakV` values. Set
+`SWING_ARM_VELOCITY`/`MUTE_ARM_VELOCITY` in the gap between the groups.
 
 **The failure mode to watch for** is a slow forward *tilt* arming the detector.
 The sensor sits well above the wrist pivot and the bell rotates through a large
@@ -110,24 +122,27 @@ would remove the whole class of problem.
 
 ## Android
 
-The BLE side ports directly to Android — same GATT service/characteristic UUIDs, same wire format (`RingEvent`: uint32 ringId, uint16 peakMilliG, uint32 timestampMs, little-endian). Kotlin outline:
+The full receiver app lives at [`../android/HandbellReceiver`](../android/HandbellReceiver),
+not just a snippet — see its README for what it does and how to build it. The
+GATT service exposes four characteristics, all under service UUID `6e400001-...`:
 
-```kotlin
-// After connecting via BluetoothGatt and discovering services:
-val ringChar = gatt.getService(UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e"))
-    .getCharacteristic(UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e"))
-gatt.setCharacteristicNotification(ringChar, true)
-val cccd = ringChar.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-gatt.writeDescriptor(cccd)
+| Characteristic | UUID suffix | Purpose |
+|---|---|---|
+| Ring | `...0002` | Notify on every ring: `RingEvent` (uint32 ringId, uint16 peakMilliG, uint32 timestampMs) |
+| Battery | `...0003` | Notify every 5s: `BatteryStatus` (uint8 percent, uint8 state, uint16 milliVolts, uint16 estimatedMinutesRemaining) |
+| Time | `...0004` | Read-only, returns current `millis()` fresh each read — for clock-sync/latency measurement |
+| Mute | `...0005` | Notify on the backward-swing-then-stop gesture: `MuteEvent` (uint32 timestampMs) |
 
-// In onCharacteristicChanged: parse the 10-byte payload with a little-endian
-// ByteBuffer (ringId: Int, peakMilliG: Short as UShort, timestampMs: Int),
-// then play a tone with SoundPool or a synthesized AudioTrack buffer, same
-// idea as bell_tone() in pc_ble_listener.py.
-```
+All multi-byte fields are little-endian.
 
-I stopped short of a full Android Studio project since it's a much bigger scaffold (Gradle, permissions, activity lifecycle) than the prototype needs right now — happy to build that out once the BLE path is confirmed working on PC, if you want the full app.
+## Known tuning issues (calibration TODO)
+
+- **Dynamic level (peak-g) varies noticeably between rings that feel
+  identical by hand.** Not yet root-caused — could be the accelerometer's ADC
+  noise, the gravity-leakage effect described above, inconsistent physical
+  technique, or some combination. Worth investigating with `CALIBRATION_MODE 2`
+  traces of several "identical" rings side by side before retuning
+  `DynamicLevel`'s g-value bands in the Android app.
 
 ## A note on BLE + ESP-NOW running together
 

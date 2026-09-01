@@ -119,6 +119,7 @@ class MainActivity : AppCompatActivity() {
             onRing = { event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs ->
                 runOnUiThread { onRing(event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs) }
             },
+            onMute = { runOnUiThread { ringPlayer.mute() } },
         ).also { it.start() }
     }
 
