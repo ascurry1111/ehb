@@ -54,22 +54,25 @@ than "acceleration crossed a threshold," which is why earlier versions rang when
 you merely picked the bell up or tapped the handle. See the `RING DETECTION`
 comment at the top of `feather_transmitter.ino` for the full rationale.
 
-### First: set the mounting orientation
+### Mounting orientation
 
-**Detection will not work until `FORWARD_AXIS` / `FORWARD_SIGN` match how your
-LIS3DH is physically mounted.** To find them, set `CALIBRATION_MODE 1`, reflash,
-and open Serial Monitor at 115200:
+`FORWARD_AXIS` / `FORWARD_SIGN` must match the physical mounting or nothing
+works. They're preset to `AXIS_Z` / `-1.0` for the current build: the LIS3DH is
+mounted flat on the rod's wide face with the component side outward, so the PCB
+normal (Z) points at the ringer and forward — away from the ringer — is `-Z`.
 
-1. Hold the bell still in the ready position. Whichever `g=[]` value sits near
-   ±9.8 is the axis pointing along gravity — that is *not* your forward axis.
-2. Swing the bell forward and watch `lin=[]`. The axis that swings strongly
-   **positive** as the bell moves forward is `FORWARD_AXIS`, with
-   `FORWARD_SIGN +1.0`. If it swings strongly negative, same axis but
-   `FORWARD_SIGN -1.0`.
-3. Set both, return `CALIBRATION_MODE` to `0`, reflash.
+**Verify the sign before tuning anything else.** The axis is confidently Z, but
+the sign depends on which way the board faces and is easy to get backwards; a
+flipped sign arms the detector on the backswing. Set `CALIBRATION_MODE 1`,
+reflash, open Serial Monitor at 115200:
 
-Sanity check: with the right settings, `vFwd` reads strongly positive during a
-forward swing and near zero at rest.
+1. Hold the bell still in the ready position. The **dominant** `g=[]` value
+   should be the in-plane axis running along the rod, with Z a minority
+   component. If Z dominates, the board isn't mounted the way this config
+   assumes and both settings need re-deriving.
+2. Swing forward and confirm `vFwd` goes strongly **positive**. If it goes
+   negative, flip `FORWARD_SIGN`.
+3. Return `CALIBRATION_MODE` to `0`, reflash.
 
 ### Then: tune the thresholds
 
@@ -87,10 +90,23 @@ swing=..m/s` lines while ringing by hand:
   multiple rings.
 
 The defaults are reasoned starting points, not measured ones — expect to adjust
-them against your actual bell. Some of that is unavoidable: with only an
-accelerometer, bell rotation during the swing leaks a little gravity into the
-forward axis (see the `KNOWN LIMITATION` note in the sketch), so the right
-thresholds are empirical rather than derivable.
+them against your actual bell.
+
+**Set them from real data rather than guesswork:** `CALIBRATION_MODE 2` streams
+the forward acceleration and velocity profile whenever the bell is moving, with
+rings still firing. Ring normally a few times, then deliberately do the things
+that *shouldn't* ring — pick the bell up, tap the handle, tilt it slowly
+forward — and compare the `peakV` values. Set `SWING_ARM_VELOCITY` in the gap
+between the two groups.
+
+**The failure mode to watch for** is a slow forward *tilt* arming the detector.
+The sensor sits well above the wrist pivot and the bell rotates through a large
+angle, so gravity rotates in the sensor's frame faster than the filter tracks
+it, and the residue looks like forward acceleration. If tilting alone arms it,
+lower `GRAVITY_LPF_ALPHA` so gravity is tracked faster — but not too far, since
+it also starts absorbing genuine swing acceleration. With a single accelerometer
+this can be traded off but not eliminated; a 6-DOF IMU with a gyro (LSM6DS3)
+would remove the whole class of problem.
 
 ## Android
 

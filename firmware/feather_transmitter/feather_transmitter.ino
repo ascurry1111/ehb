@@ -123,24 +123,35 @@
 // Which LIS3DH axis points in the direction the bell travels when swung
 // forward, and which sign of that axis is "forward". THIS MUST MATCH YOUR
 // PHYSICAL MOUNTING — see CALIBRATION_MODE below to determine it empirically.
+// Set from the build photo: the LIS3DH is mounted flat on the rod's wide face,
+// long axis along the rod, component side facing outward toward the ringer.
+// The PCB normal (Z) therefore points out of the rod face at the ringer, and a
+// handbell's fore/aft swing runs along that normal — so forward (away from the
+// ringer) is -Z. VERIFY WITH CALIBRATION_MODE ANYWAY: the axis is confidently
+// Z, but the sign depends on which way the board faces and is easy to get
+// backwards. A flipped sign means the detector arms on the backswing instead.
 #define AXIS_X 0
 #define AXIS_Y 1
 #define AXIS_Z 2
-#define FORWARD_AXIS   AXIS_Y
-#define FORWARD_SIGN   (+1.0f)
+#define FORWARD_AXIS   AXIS_Z
+#define FORWARD_SIGN   (-1.0f)
 
-// Set to 1, reflash, and open Serial Monitor at 115200 to identify the
-// forward axis:
-//   1. Hold the bell still in the ready position. Whichever of the three g=[]
-//      numbers sits near ±9.8 is the axis pointing along gravity — it is NOT
-//      your forward axis.
-//   2. Swing the bell forward normally and watch lin=[]. The axis that swings
-//      strongly POSITIVE as the bell moves forward is FORWARD_AXIS with
-//      FORWARD_SIGN +1.0. If it swings strongly negative instead, that's your
-//      axis with FORWARD_SIGN -1.0.
-//   3. Set FORWARD_AXIS/FORWARD_SIGN above, set this back to 0, reflash.
-// With the correct settings, vFwd should read strongly positive during a
-// forward swing and near zero when the bell is at rest.
+// Diagnostics. Set, reflash, open Serial Monitor at 115200, then set back to 0.
+//   1 = axis identification (rings suppressed)
+//       - Hold the bell still in the ready position. The DOMINANT g=[] value
+//         should be the in-plane axis running along the rod (X or Y). Z should
+//         be the minority component. If Z is dominant, the board isn't mounted
+//         the way this config assumes — re-derive both settings below.
+//       - Swing forward and watch lin=[]. Whichever axis swings hardest is
+//         FORWARD_AXIS; if it swings NEGATIVE on the forward stroke, that's
+//         FORWARD_SIGN -1.0 (expected here), positive means +1.0.
+//       - Confirm: vFwd should go strongly POSITIVE on a forward swing. If it
+//         goes negative, flip FORWARD_SIGN.
+//   2 = swing trace (rings still fire) — streams the forward acceleration and
+//       velocity profile whenever the bell is moving, so the thresholds below
+//       can be set from real numbers. Ring a few times normally, then
+//       deliberately do the things that should NOT ring (pick it up, tap the
+//       handle, tilt it forward slowly) and compare the traces.
 #define CALIBRATION_MODE 0
 
 // --- Ring detection tuning -------------------------------------------------
@@ -151,13 +162,25 @@
 // (a few hundred ms) doesn't get absorbed into the gravity estimate, fast
 // enough to follow the bell being reoriented between rings.
 //
-// KNOWN LIMITATION: the bell rotates through its swing arc, so gravity rotates
-// in the sensor's frame faster than this filter tracks it, and some gravity
-// leaks into the "linear" acceleration. With only an accelerometer there's no
-// clean fix — you can't separate rotation from translation from one sensor.
-// It's why the thresholds below need empirical tuning rather than being
-// derivable on paper. If it ever proves limiting, a 6-DOF IMU with a gyro
-// (e.g. LSM6DS3) would let a complementary filter track orientation properly.
+// KNOWN LIMITATION — most likely thing to need tuning on real hardware:
+// the bell rotates through its swing arc, so gravity rotates in the sensor's
+// frame faster than this filter tracks it, and the residue leaks into the
+// "linear" acceleration. This matters more here than it would on a
+// translation-only rig: the sensor sits well above the wrist pivot, so the
+// motion is largely rotational and the bell tips through a substantial angle.
+// Tipping forward by θ leaks roughly g*sin(θ) into the forward axis, and only
+// the fraction this filter has caught up on gets removed — enough that a slow
+// deliberate tilt can accumulate phantom forward velocity.
+//
+// If tilting the bell forward (without a real swing) arms the detector,
+// LOWER this alpha so gravity is tracked faster; the cost is that it also
+// absorbs more genuine swing acceleration, so don't overshoot. Use
+// CALIBRATION_MODE 2 to compare a real swing against a slow tilt.
+//
+// With only an accelerometer there's no clean fix — one sensor can't separate
+// rotation from translation. A 6-DOF IMU with a gyro (e.g. LSM6DS3) would let
+// a complementary filter track orientation properly and remove this whole
+// class of problem.
 #define GRAVITY_LPF_ALPHA       0.997f
 
 // Per-sample decay on the velocity integrator (~0.5s time constant at 400Hz).
@@ -420,11 +443,16 @@ void setup() {
   lis.setPerformanceMode(LIS3DH_MODE_HIGH_RESOLUTION);
   lis.setDataRate(LIS3DH_DATARATE_400_HZ);
   Serial.println("LIS3DH ready (400Hz, 12-bit).");
-#if CALIBRATION_MODE
-  Serial.println("\n*** CALIBRATION MODE — no rings will be sent. ***");
-  Serial.println("Hold still to find the gravity axis, then swing forward and");
-  Serial.println("watch which lin[] axis goes strongly positive. See the notes");
-  Serial.println("above CALIBRATION_MODE in this sketch.\n");
+#if CALIBRATION_MODE == 1
+  Serial.println("\n*** CALIBRATION MODE 1 (axis ID) — rings suppressed. ***");
+  Serial.println("Hold still: the dominant g[] axis should be along the rod,");
+  Serial.println("not Z. Then swing forward and confirm vFwd goes POSITIVE.");
+  Serial.println("See the notes above CALIBRATION_MODE in this sketch.\n");
+#elif CALIBRATION_MODE == 2
+  Serial.println("\n*** CALIBRATION MODE 2 (swing trace) — rings still fire. ***");
+  Serial.println("Traces while moving. Ring normally a few times, then try the");
+  Serial.println("things that should NOT ring (pick up, tap handle, slow tilt)");
+  Serial.println("and compare peakV against SWING_ARM_VELOCITY.\n");
 #endif
 
   // --- BLE (NimBLE) ---
@@ -556,7 +584,7 @@ void loop() {
   if (linMag > peakLinearAccel) peakLinearAccel = linMag;
   if (forwardVelocity > peakForwardVelocity) peakForwardVelocity = forwardVelocity;
 
-#if CALIBRATION_MODE
+#if CALIBRATION_MODE == 1
   static unsigned long lastCalPrintMs = 0;
   if (nowMs - lastCalPrintMs >= 50) {
     lastCalPrintMs = nowMs;
@@ -564,6 +592,22 @@ void loop() {
                   gravityX, gravityY, gravityZ, linX, linY, linZ, forwardVelocity);
   }
 #else
+#if CALIBRATION_MODE == 2
+  // Trace only while the bell is actually moving, so the log isn't buried in
+  // idle noise. 50Hz is enough to see the shape of a swing without flooding
+  // the serial link (which would itself add latency).
+  {
+    static unsigned long lastTracePrintMs = 0;
+    if (linMag >= REST_ACCEL_THRESHOLD && nowMs - lastTracePrintMs >= 20) {
+      lastTracePrintMs = nowMs;
+      Serial.printf("aFwd=%7.2f  vFwd=%6.2f  peakV=%6.2f  state=%s\n",
+                    aForward, forwardVelocity, peakForwardVelocity,
+                    ringState == RING_IDLE       ? "idle"
+                    : ringState == RING_SWINGING ? "ARMED"
+                                                 : "refrac");
+    }
+  }
+#endif
   // --- Swing / stop state machine ------------------------------------------
   switch (ringState) {
     case RING_IDLE:
