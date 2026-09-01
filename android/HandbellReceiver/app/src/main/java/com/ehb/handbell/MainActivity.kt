@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -16,6 +17,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvRingCount: TextView
     private lateinit var tvLastPeak: TextView
+    private lateinit var tvLatency: TextView
     private lateinit var tvBattery: TextView
     private lateinit var rootView: android.view.View
 
@@ -45,6 +47,7 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         tvRingCount = findViewById(R.id.tvRingCount)
         tvLastPeak = findViewById(R.id.tvLastPeak)
+        tvLatency = findViewById(R.id.tvLatency)
         tvBattery = findViewById(R.id.tvBattery)
 
         ringPlayer = RingPlayer(this)
@@ -70,12 +73,14 @@ class MainActivity : AppCompatActivity() {
         bleClient = BleRingClient(
             context = this,
             onStatus = { status -> runOnUiThread { tvStatus.text = status } },
-            onRing = { event -> runOnUiThread { onRing(event) } },
             onBattery = { status -> runOnUiThread { onBattery(status) } },
+            onRing = { event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs ->
+                runOnUiThread { onRing(event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs) }
+            },
         ).also { it.start() }
     }
 
-    private fun onRing(event: RingEvent) {
+    private fun onRing(event: RingEvent, receivedAtElapsedMs: Long, estimatedDetectionAtElapsedMs: Long?) {
         ringCount++
         tvRingCount.text = ringCount.toString()
         tvLastPeak.text = String.format(Locale.US, "Last peak: %.2fg", event.peakG)
@@ -83,6 +88,16 @@ class MainActivity : AppCompatActivity() {
 
         // Play immediately — this is the latency-critical path, no extra work before it.
         ringPlayer.play(event.peakG)
+        val playedAtElapsedMs = SystemClock.elapsedRealtime()
+
+        tvLatency.text = if (estimatedDetectionAtElapsedMs == null) {
+            "Latency: syncing clock…"
+        } else {
+            val totalMs = playedAtElapsedMs - estimatedDetectionAtElapsedMs
+            val bleMs = receivedAtElapsedMs - estimatedDetectionAtElapsedMs
+            val appMs = playedAtElapsedMs - receivedAtElapsedMs
+            "Latency: ${totalMs}ms  (ring→phone ${bleMs}ms + phone→sound ${appMs}ms)"
+        }
     }
 
     private fun onBattery(status: BatteryStatus) {

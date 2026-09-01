@@ -61,6 +61,32 @@ verify one here without the Android tooling installed). To get it building:
 - The on-screen ring counter and last-peak reading are there so you (and the
   audience) can see events land even before the tone finishes playing.
 
+## About the latency reading
+
+The Feather's clock (`millis()`) and the phone's clock are unrelated —
+comparing `RingEvent.timestampMs` directly against a phone timestamp would be
+meaningless. To bridge them, right after connecting the app reads a
+clock-sync characteristic (`BLE_CHAR_TIME_UUID`) once, bracketing the round
+trip with its own clock and taking the midpoint as the estimated offset
+between the two clocks. This assumes the read is roughly symmetric (a fair
+assumption given the ~7.5–15ms connection interval), and is accurate to
+roughly half that round trip.
+
+Given that offset, each ring reports:
+- **Total latency** — from the Feather's detection instant to the app calling
+  `SoundPool.play()`.
+- **ring→phone** — detection instant to the BLE notification arriving.
+- **phone→sound** — notification arriving to the `play()` call.
+
+The one thing this *doesn't* capture: the actual acoustic output delay after
+`play()` returns (audio HAL/mixer buffering) — there's no public Android API
+that reports "audio is now audible," so `play()` returning is the best
+available proxy. Expect the true perceived latency to run a little higher
+than the number shown, by whatever that device's audio path adds.
+
+Until the first sync completes (a few hundred ms after connecting), latency
+reads "syncing clock…" rather than a wrong number.
+
 ## About the battery reading
 
 The Feather V2 has no fuel-gauge chip, so percentage/charging/no-battery are

@@ -36,6 +36,13 @@
         just sitting unplugged look identical from voltage alone.
     See BATT_* constants below to tune thresholds against your actual pack.
 
+  LATENCY MEASUREMENT
+    RingEvent.timestampMs is millis() on THIS board — meaningless compared
+    directly against the phone's clock. The Android app reads
+    BLE_CHAR_TIME_UUID once after connecting to estimate the offset between
+    the two clocks (see TimeCharacteristicCallbacks below), then uses that
+    to compute true ring-to-tone latency on its end.
+
   LIBRARIES (Arduino Library Manager)
     - Adafruit LIS3DH
     - Adafruit Unified Sensor
@@ -82,6 +89,7 @@
 #define BLE_SERVICE_UUID      "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_RING_UUID    "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_BATTERY_UUID "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+#define BLE_CHAR_TIME_UUID    "6e400004-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_DEVICE_NAME       "WirelessHandbell"
 
 // Preferred connection parameters, requested as soon as a central connects.
@@ -115,6 +123,7 @@ Adafruit_LIS3DH lis = Adafruit_LIS3DH();
 NimBLEServer* bleServer = nullptr;
 NimBLECharacteristic* ringCharacteristic = nullptr;
 NimBLECharacteristic* batteryCharacteristic = nullptr;
+NimBLECharacteristic* timeCharacteristic = nullptr;
 bool bleClientConnected = false;
 
 uint32_t ringCounter = 0;
@@ -169,6 +178,17 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     bleClientConnected = false;
     Serial.println("[BLE] client disconnected, restarting advertising");
     NimBLEDevice::startAdvertising();
+  }
+};
+
+// Serves the current millis() on every read, for the Android app's
+// clock-sync handshake (its clock and ours are otherwise unrelated — this
+// is what lets RingEvent.timestampMs be compared against the phone's own
+// clock to compute end-to-end ring-to-tone latency).
+class TimeCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
+  void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+    uint32_t now = millis();
+    pCharacteristic->setValue((uint8_t*)&now, sizeof(now));
   }
 };
 
@@ -289,6 +309,10 @@ void setup() {
   batteryCharacteristic = service->createCharacteristic(
       BLE_CHAR_BATTERY_UUID,
       NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
+  timeCharacteristic = service->createCharacteristic(
+      BLE_CHAR_TIME_UUID,
+      NIMBLE_PROPERTY::READ);
+  timeCharacteristic->setCallbacks(new TimeCharacteristicCallbacks());
   service->start();
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();

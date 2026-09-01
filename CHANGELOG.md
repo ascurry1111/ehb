@@ -20,6 +20,11 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   charging / running on USB with no battery — all inferred from a single
   voltage reading over time, since the Feather V2 has no fuel-gauge chip.
   Sent over a second BLE characteristic and shown in the Android app.
+- End-to-end ring-to-tone latency, shown in the app on every ring. A new
+  clock-sync characteristic lets the phone estimate the offset between its
+  own clock and the Feather's `millis()`, so `RingEvent.timestampMs` can be
+  compared against the phone's clock. Breaks the total down into
+  ring→phone (BLE) and phone→sound (app) legs.
 
 ## v0.1 — 2026-08-29
 

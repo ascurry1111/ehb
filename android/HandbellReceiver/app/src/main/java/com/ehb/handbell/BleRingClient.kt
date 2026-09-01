@@ -15,22 +15,40 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
 
 /**
  * Scans for the "WirelessHandbell" BLE peripheral, connects, subscribes to ring
- * notifications, and auto-reconnects on disconnect. Requests the fastest
- * connection priority Android exposes to an app, to keep notify latency down —
- * see the matching NimBLEServer::updateConnParams() call in feather_transmitter.ino.
+ * and battery notifications, and auto-reconnects on disconnect. Requests the
+ * fastest connection priority Android exposes to an app, to keep notify
+ * latency down — see the matching NimBLEServer::updateConnParams() call in
+ * feather_transmitter.ino.
+ *
+ * Also estimates the offset between the Feather's clock (millis(), used in
+ * RingEvent.timestampMs) and the phone's own clock (SystemClock.elapsedRealtime()),
+ * by reading BLE_CHAR_TIME_UUID once after connecting and bracketing the round
+ * trip (midpoint method — assumes the read is roughly symmetric, which is a fair
+ * assumption given the ~7.5-15ms connection interval the firmware requests).
+ * This is what lets onRing() report true end-to-end ring-to-tone latency rather
+ * than just "time since this app received the BLE notification."
  *
  * Caller must hold BLUETOOTH_SCAN/BLUETOOTH_CONNECT before calling start().
  */
 class BleRingClient(
     private val context: Context,
     private val onStatus: (String) -> Unit,
-    private val onRing: (RingEvent) -> Unit,
     private val onBattery: (BatteryStatus) -> Unit,
+    /**
+     * receivedAtElapsedMs: phone-clock time (SystemClock.elapsedRealtime()) the
+     * notification arrived. estimatedDetectionAtElapsedMs: the ring's own
+     * detection instant, converted into the phone's clock domain via the sync
+     * offset -- null if we haven't completed a clock sync yet.
+     */
+    private val onRing: (event: RingEvent, receivedAtElapsedMs: Long, estimatedDetectionAtElapsedMs: Long?) -> Unit,
 ) {
     private companion object {
         const val TAG = "BleRingClient"
@@ -38,6 +56,7 @@ class BleRingClient(
         val SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
         val CHAR_RING_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
         val CHAR_BATTERY_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+        val CHAR_TIME_UUID: UUID = UUID.fromString("6e400004-b5a3-f393-e0a9-e50e24dcca9e")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         const val RESCAN_DELAY_MS = 1000L
     }
@@ -110,6 +129,31 @@ class BleRingClient(
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
+
+        // Android's GATT stack allows only one outstanding operation (read OR
+        // write) at a time -- issuing a second one before the first's callback
+        // fires silently fails. Queue every op and drain one at a time.
+        private val opQueue = ArrayDeque<() -> Unit>()
+        private var opInFlight = false
+
+        private fun enqueue(op: () -> Unit) {
+            opQueue.addLast(op)
+            if (!opInFlight) runNextOp()
+        }
+
+        private fun runNextOp() {
+            val next = opQueue.removeFirstOrNull()
+            if (next == null) {
+                opInFlight = false
+                return
+            }
+            opInFlight = true
+            next()
+        }
+
+        // Set right before issuing the clock-sync read; consumed in onCharacteristicRead.
+        private var syncReadStartedAtElapsedMs = 0L
+
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             when (newState) {
@@ -124,15 +168,13 @@ class BleRingClient(
                     onStatus("Disconnected…")
                     g.close()
                     if (gatt === g) gatt = null
+                    opQueue.clear()
+                    opInFlight = false
+                    clockOffsetMs = null
                     if (!stopped) mainHandler.postDelayed({ startScan() }, RESCAN_DELAY_MS)
                 }
             }
         }
-
-        // Android's GATT stack allows only one outstanding read/write at a time —
-        // issuing a second descriptor write before the first one's callback fires
-        // silently fails. Queue them and drain one at a time from onDescriptorWrite.
-        private val descriptorWriteQueue = ArrayDeque<BluetoothGattDescriptor>()
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
@@ -142,33 +184,51 @@ class BleRingClient(
                 return
             }
             val service = g.getService(SERVICE_UUID)
-            val ringOk = enableNotify(g, service?.getCharacteristic(CHAR_RING_UUID))
-            if (!ringOk) {
+
+            val ringChar = service?.getCharacteristic(CHAR_RING_UUID)
+            if (ringChar == null) {
                 onStatus("Ring characteristic not found")
                 return
             }
-            // Battery telemetry is a nice-to-have — don't fail the connection over it.
-            val batteryChar = service?.getCharacteristic(CHAR_BATTERY_UUID)
-            if (batteryChar == null || !enableNotify(g, batteryChar)) {
-                Log.w(TAG, "Battery characteristic not found")
+
+            // Sync first, so an offset is ready as early as possible for the first ring.
+            val timeChar = service.getCharacteristic(CHAR_TIME_UUID)
+            if (timeChar != null) {
+                enqueue {
+                    syncReadStartedAtElapsedMs = SystemClock.elapsedRealtime()
+                    g.readCharacteristic(timeChar)
+                }
+            } else {
+                Log.w(TAG, "Time characteristic not found — latency won't be measurable")
             }
+
+            enableNotify(g, ringChar)
+
+            // Battery telemetry is a nice-to-have — don't fail the connection over it.
+            val batteryChar = service.getCharacteristic(CHAR_BATTERY_UUID)
+            if (batteryChar == null) {
+                Log.w(TAG, "Battery characteristic not found")
+            } else {
+                enableNotify(g, batteryChar)
+            }
+
             onStatus("Connected to $DEVICE_NAME")
         }
 
         @SuppressLint("MissingPermission")
-        private fun enableNotify(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic?): Boolean {
-            if (characteristic == null) return false
+        private fun enableNotify(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             g.setCharacteristicNotification(characteristic, true)
-            val descriptor = characteristic.getDescriptor(CCCD_UUID) ?: return false
+            val descriptor = characteristic.getDescriptor(CCCD_UUID)
+            if (descriptor == null) {
+                Log.w(TAG, "No CCCD on ${characteristic.uuid}")
+                return
+            }
             @Suppress("DEPRECATION")
             descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            val wasIdle = descriptorWriteQueue.isEmpty()
-            descriptorWriteQueue.addLast(descriptor)
-            if (wasIdle) {
+            enqueue {
                 @Suppress("DEPRECATION")
                 g.writeDescriptor(descriptor)
             }
-            return true
         }
 
         @SuppressLint("MissingPermission")
@@ -177,24 +237,58 @@ class BleRingClient(
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 Log.w(TAG, "Descriptor write failed for ${descriptor.characteristic.uuid}: status=$status")
             }
-            descriptorWriteQueue.removeFirstOrNull()
-            val next = descriptorWriteQueue.firstOrNull() ?: return
-            g.writeDescriptor(next)
+            runNextOp()
         }
 
         // Deprecated in API 33, but still the callback the platform actually invokes
-        // regardless of API level — the API-33 overload with an explicit byte[] param
-        // is an additional opt-in hook, not a replacement. Simplest to just use this one.
+        // regardless of API level -- the API-33 overload with an explicit byte[] param
+        // is an additional opt-in hook, not a replacement. Simplest to use this one
+        // consistently, same as onCharacteristicChanged below.
+        @SuppressLint("MissingPermission")
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            val readFinishedAt = SystemClock.elapsedRealtime()
+            if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == CHAR_TIME_UUID) {
+                val value = characteristic.value
+                if (value != null && value.size >= 4) {
+                    val firmwareMillis = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL
+                    val roundTripMs = readFinishedAt - syncReadStartedAtElapsedMs
+                    val midpointPhoneTime = syncReadStartedAtElapsedMs + roundTripMs / 2
+                    clockOffsetMs = midpointPhoneTime - firmwareMillis
+                    Log.i(TAG, "Clock sync: offset=${clockOffsetMs}ms roundTrip=${roundTripMs}ms")
+                }
+            } else {
+                Log.w(TAG, "Characteristic read failed for ${characteristic.uuid}: status=$status")
+            }
+            runNextOp()
+        }
+
+        // Same deprecation note as onCharacteristicRead above.
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(
             g: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic,
         ) {
+            // Capture this first, before any parsing -- it's the "arrived" instant.
+            val receivedAt = SystemClock.elapsedRealtime()
             val value = characteristic.value ?: return
             when (characteristic.uuid) {
-                CHAR_RING_UUID -> RingEvent.parse(value)?.let(onRing)
+                CHAR_RING_UUID -> {
+                    val event = RingEvent.parse(value) ?: return
+                    val offset = clockOffsetMs
+                    val estimatedDetectionAt = if (offset != null) event.timestampMs + offset else null
+                    onRing(event, receivedAt, estimatedDetectionAt)
+                }
                 CHAR_BATTERY_UUID -> BatteryStatus.parse(value)?.let(onBattery)
             }
         }
     }
+
+    /** Phone-clock (elapsedRealtime) minus Feather-clock (millis()) offset, once synced. */
+    @Volatile
+    private var clockOffsetMs: Long? = null
 }
