@@ -4,62 +4,117 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:gravity="center"
     android:background="#101010"
-    android:padding="32dp">
+    android:padding="16dp">
 
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Starting..."
-        android:textColor="#FFFFFF"
-        android:textSize="20sp"
-        android:gravity="center"
-        android:layout_marginBottom="48dp" />
-
-    <TextView
-        android:id="@+id/tvRingCount"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="0"
-        android:textColor="#FFD54F"
-        android:textSize="96sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/tvRingLabel"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="rings"
-        android:textColor="#AAAAAA"
-        android:textSize="18sp"
-        android:layout_marginBottom="24dp" />
-
-    <TextView
-        android:id="@+id/tvLastPeak"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Last peak: —"
-        android:textColor="#CCCCCC"
-        android:textSize="16sp" />
-
-    <TextView
-        android:id="@+id/tvLatency"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Latency: —"
-        android:textColor="#4FC3F7"
-        android:textSize="16sp"
-        android:layout_marginBottom="32dp" />
-
+    <!-- Deliberately small and out of the way — battery is background info, not a focus. -->
     <TextView
         android:id="@+id/tvBattery"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Battery: —"
+        android:text="—"
         android:textColor="#8BC34A"
-        android:textSize="18sp"
-        android:gravity="center" />
+        android:textSize="11sp"
+        android:alpha="0.7" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:paddingTop="16dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Starting..."
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"
+            android:gravity="center"
+            android:layout_marginBottom="32dp" />
+
+        <TextView
+            android:id="@+id/tvRingCount"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0"
+            android:textColor="#FFD54F"
+            android:textSize="80sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvRingLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="rings"
+            android:textColor="#AAAAAA"
+            android:textSize="18sp"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:id="@+id/tvLastPeak"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Last peak: —"
+            android:textColor="#CCCCCC"
+            android:textSize="16sp" />
+
+        <!-- Tap to toggle the ring→phone / phone→sound breakdown -- deliberately no
+             visible button chrome for this, per the "unobtrusive" ask. -->
+        <TextView
+            android:id="@+id/tvLatency"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Latency: —"
+            android:textColor="#4FC3F7"
+            android:textSize="16sp"
+            android:padding="6dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackground" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingTop="8dp"
+        android:paddingBottom="4dp">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="RING LOG"
+            android:textColor="#777777"
+            android:textSize="12sp"
+            android:letterSpacing="0.1" />
+
+        <TextView
+            android:id="@+id/tvClearLog"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Clear"
+            android:textColor="#4FC3F7"
+            android:textSize="13sp"
+            android:padding="6dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:background="?attr/selectableItemBackground" />
+
+    </LinearLayout>
+
+    <ListView
+        android:id="@+id/lvRingLog"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:divider="#222222"
+        android:dividerHeight="1dp"
+        android:scrollbars="vertical" />
 
 </LinearLayout>

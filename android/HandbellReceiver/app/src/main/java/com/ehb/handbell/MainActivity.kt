@@ -7,6 +7,8 @@ import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
+import android.widget.ArrayAdapter
+import android.widget.ListView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -19,11 +21,34 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLastPeak: TextView
     private lateinit var tvLatency: TextView
     private lateinit var tvBattery: TextView
+    private lateinit var tvClearLog: TextView
+    private lateinit var lvRingLog: ListView
     private lateinit var rootView: android.view.View
 
     private lateinit var ringPlayer: RingPlayer
+    private lateinit var ringLogAdapter: ArrayAdapter<String>
     private var bleClient: BleRingClient? = null
     private var ringCount = 0
+
+    /** Raw per-ring data, newest first -- kept separately from the adapter's
+     *  display strings so toggling detail level can re-render history. */
+    private data class RingRecord(
+        val ringId: Long,
+        val peakG: Float,
+        val totalMs: Long?,
+        val bleMs: Long?,
+        val appMs: Long?,
+    )
+
+    private val ringHistory = ArrayDeque<RingRecord>()
+    private var lastRing: RingRecord? = null
+
+    // Tap tvLatency to flip this -- deliberately no visible toggle control.
+    private var showLatencyDetails = false
+
+    private companion object {
+        const val MAX_LOG_ENTRIES = 200
+    }
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
@@ -49,6 +74,22 @@ class MainActivity : AppCompatActivity() {
         tvLastPeak = findViewById(R.id.tvLastPeak)
         tvLatency = findViewById(R.id.tvLatency)
         tvBattery = findViewById(R.id.tvBattery)
+        tvClearLog = findViewById(R.id.tvClearLog)
+        lvRingLog = findViewById(R.id.lvRingLog)
+
+        ringLogAdapter = ArrayAdapter(this, R.layout.item_ring_log, R.id.tvRingLogItem, mutableListOf<String>())
+        lvRingLog.adapter = ringLogAdapter
+
+        tvLatency.setOnClickListener {
+            showLatencyDetails = !showLatencyDetails
+            lastRing?.let { tvLatency.text = "Latency: ${formatLatency(it, showLatencyDetails)}" }
+            refreshLogDisplay()
+        }
+
+        tvClearLog.setOnClickListener {
+            ringHistory.clear()
+            ringLogAdapter.clear()
+        }
 
         ringPlayer = RingPlayer(this)
         ringPlayer.prepare()
@@ -90,20 +131,46 @@ class MainActivity : AppCompatActivity() {
         ringPlayer.play(event.peakG)
         val playedAtElapsedMs = SystemClock.elapsedRealtime()
 
-        tvLatency.text = if (estimatedDetectionAtElapsedMs == null) {
-            "Latency: syncing clock…"
+        val record = if (estimatedDetectionAtElapsedMs == null) {
+            RingRecord(event.ringId, event.peakG, null, null, null)
         } else {
-            val totalMs = playedAtElapsedMs - estimatedDetectionAtElapsedMs
-            val bleMs = receivedAtElapsedMs - estimatedDetectionAtElapsedMs
-            val appMs = playedAtElapsedMs - receivedAtElapsedMs
-            "Latency: ${totalMs}ms  (ring→phone ${bleMs}ms + phone→sound ${appMs}ms)"
+            RingRecord(
+                ringId = event.ringId,
+                peakG = event.peakG,
+                totalMs = playedAtElapsedMs - estimatedDetectionAtElapsedMs,
+                bleMs = receivedAtElapsedMs - estimatedDetectionAtElapsedMs,
+                appMs = playedAtElapsedMs - receivedAtElapsedMs,
+            )
         }
+        lastRing = record
+        tvLatency.text = "Latency: ${formatLatency(record, showLatencyDetails)}"
+
+        ringHistory.addFirst(record)
+        if (ringHistory.size > MAX_LOG_ENTRIES) ringHistory.removeLast()
+        ringLogAdapter.insert(formatLogLine(record, showLatencyDetails), 0)
+        if (ringLogAdapter.count > MAX_LOG_ENTRIES) {
+            ringLogAdapter.remove(ringLogAdapter.getItem(ringLogAdapter.count - 1))
+        }
+    }
+
+    private fun formatLatency(r: RingRecord, details: Boolean): String = when {
+        r.totalMs == null -> "syncing clock…"
+        details -> "${r.totalMs}ms  (ring→phone ${r.bleMs}ms + phone→sound ${r.appMs}ms)"
+        else -> "${r.totalMs}ms"
+    }
+
+    private fun formatLogLine(r: RingRecord, details: Boolean): String =
+        String.format(Locale.US, "#%-4d %5.2fg  %s", r.ringId, r.peakG, formatLatency(r, details))
+
+    private fun refreshLogDisplay() {
+        ringLogAdapter.clear()
+        ringLogAdapter.addAll(ringHistory.map { formatLogLine(it, showLatencyDetails) })
     }
 
     private fun onBattery(status: BatteryStatus) {
         tvBattery.text = when (status.state) {
-            BatteryState.NO_BATTERY -> "⚡ Running on USB (no battery)"
-            BatteryState.CHARGING -> "🔌 Charging — ${status.percent}%"
+            BatteryState.NO_BATTERY -> "⚡ USB, no battery"
+            BatteryState.CHARGING -> "🔌 Charging ${status.percent}%"
             BatteryState.DISCHARGING -> "🔋 ${status.percent}% • ${formatMinutes(status.estimatedMinutesRemaining)} left"
             BatteryState.UNKNOWN -> "🔋 ${status.percent}% • reading…"
         }

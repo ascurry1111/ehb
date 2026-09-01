@@ -61,6 +61,18 @@ verify one here without the Android tooling installed). To get it building:
 - The on-screen ring counter and last-peak reading are there so you (and the
   audience) can see events land even before the tone finishes playing.
 
+## UI notes
+
+- **Battery** (top-left, small/dim) is deliberately out of the way — it's
+  background info, not something to watch during a demo.
+- **Latency** defaults to just the total. Tap the latency line to toggle the
+  ring→phone / phone→sound breakdown on and off — there's no visible button
+  for this by design; the ring log respects the same toggle.
+- **Ring log** lists every ring this session, newest first, in the same
+  format as the "last ring" line. Tap **Clear** (top-right of the log
+  section) to reset it — this only clears the on-screen log, it doesn't
+  affect the running ring counter.
+
 ## About the latency reading
 
 The Feather's clock (`millis()`) and the phone's clock are unrelated —

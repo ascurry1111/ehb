@@ -25,6 +25,10 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   own clock and the Feather's `millis()`, so `RingEvent.timestampMs` can be
   compared against the phone's clock. Breaks the total down into
   ring→phone (BLE) and phone→sound (app) legs.
+- UI pass: battery moved to a small, dim top-left corner (out of the way);
+  latency defaults to just the total, tap it to toggle the breakdown; added
+  a scrolling ring log (newest first, same info as "last ring") with a
+  Clear control.
 
 ## v0.1 — 2026-08-29
 
