@@ -91,7 +91,7 @@
        those.
    ============================================================================ */
 
-part = "both";  // "rod", "cone", "both" (preview only), or one of the five test
+part = "rod";  // "rod", "cone", "both" (preview only), or one of the five test
                  // prints: "test_feather_plate", "test_lis3dh_plate",
                  // "test_battery_cradle", "test_rod_collar", "test_cone_collar"
                  // — see "TEST PRINTS — how to use" near the bottom of this file.
@@ -118,7 +118,19 @@ rod_corner_r  = 2.5;         // mm, rounded corner radius — kept modest so the
                               // this value has margin to spare, not a tight fit)
 rod_wall      = 3;           // mm, wall thickness of the hollow rod (weight/filament savings)
 handle_length = 5.0 * IN;    // 127 mm, bare grip length from the bottom
-top_cap_thick = rod_wall;    // mm — actually now at the BOTTOM (the free end); see rod_hollow()
+bottom_cap_thick = rod_wall;  // mm — solid cap at the BOTTOM (the free grip end).
+                                // (Was called top_cap_thick — legacy name from before
+                                // the ORIENTATION FIX above; renamed now that there's
+                                // a real top_cap_thick too, see below.)
+top_cap_thick = rod_wall;    // mm — solid cap at the TOP (the end that sits inside
+                              // the cone). Originally left open there on purpose, but
+                              // an open top means the slicer sees the internal
+                              // lock-screw bosses (rod_lock_pilot_bosses(), floating
+                              // cylinders inside the hollow interior) as overhangs into
+                              // open air and wants to support into the cavity from
+                              // above — capping both ends encloses the interior fully,
+                              // so it's just a normal internal void the slicer fills
+                              // per its own infill settings instead.
 
 cone_attach_z = handle_length;  // 127 mm — the cone's collar starts here and covers the rest of the rod
 
@@ -140,7 +152,7 @@ feather_hole_d     = 2.5;        // mm, clearance hole diameter — Adafruit's o
                                   // stays the right choice here, not just a default.
 feather_standoff_h = 4;          // mm, standoff height — real airflow behind the board
 feather_standoff_d = 6;          // mm
-feather_pilot_d    = 2.2;        // mm, blind pilot hole diameter — proper pilot size for M2.5
+feather_pilot_d    = 2.3;        // mm, blind pilot hole diameter — proper pilot size for M2.5
 feather_bottom_z   = board_top_z - feather_length;  // 177.8 mm
 
 // --- Adafruit LIS3DH breakout, STEMMA QT form factor ---
@@ -152,7 +164,7 @@ lis3dh_hole_inset  = 0.1 * IN;   // 2.54 mm — estimate, matches Adafruit's sta
 lis3dh_hole_d      = 2.5;        // mm, clearance hole diameter — standardized with feather_hole_d
 lis3dh_standoff_h  = 4;          // mm — standardized with feather_standoff_h
 lis3dh_standoff_d  = 6;          // mm — standardized with feather_standoff_d
-lis3dh_pilot_d     = 2.2;        // mm, blind pilot hole diameter — proper pilot size for M2.5,
+lis3dh_pilot_d     = 2.3;        // mm, blind pilot hole diameter — proper pilot size for M2.5,
                                   // standardized with feather_pilot_d
 lis3dh_bottom_z    = board_top_z - lis3dh_length;  // 222.25 mm
 
@@ -186,7 +198,7 @@ cone_fit_clearance = 0.5;  // mm total — loosened vs. a pure friction design,
 ridge_extra        = 1.2;  // mm the stop ridge protrudes beyond rod_side on each side
 ridge_height       = 2;    // mm, height of the stop ridge
 
-lock_pilot_d      = 2.2;    // mm, blind pilot hole into the rod — proper pilot size for M2.5,
+lock_pilot_d      = 2.3;    // mm, blind pilot hole into the rod — proper pilot size for M2.5,
                              // standardized with feather_pilot_d / lis3dh_pilot_d
 lock_boss_d       = 6;      // mm, diameter of a small boss added to the INSIDE of the
                              // rod wall (into the hollow interior) at each pilot hole —
@@ -202,8 +214,17 @@ lock_boss_inward_reach = 2; // mm the inward boss extends past the wall's own th
                              // = rod_wall + lock_boss_inward_reach - 1mm floor
 lock_clearance_d  = 2.6;    // mm, clearance hole through the cone's collar wall
 
-stop_ridge_z = cone_attach_z + collar_len;      // 135 mm — hard stop; cone can't slide past this
 lock_z       = cone_attach_z + collar_len / 2;  // 131 mm — roughly mid-collar, on the rod's ±X faces (clear of both boards)
+
+// Measured directly on printed parts: with the cone's collar fully seated
+// against the ridge, the ridge sits 6mm above the pilot hole on the rod —
+// checked on all four sides of two printed test_rod_collar pieces against
+// a screw-hole witness mark transferred from a printed test_cone_collar,
+// consistent to within measurement error each time. Anchored to lock_z
+// (not to cone_attach_z/collar_len) so it stays correct if the hole
+// position ever changes for an unrelated reason.
+ridge_lock_gap = 6;  // mm, measured — see above
+stop_ridge_z = lock_z + ridge_lock_gap;  // 137 mm — hard stop; cone can't slide past this
 
 // ---------------------------------------------------------------------------
 // BATTERY — cradle design from your collaborator's Battery_Slot.scad
@@ -267,6 +288,17 @@ cone_overhang   = 0.125 * IN; // 3.175 mm, how far the cone extends past the rod
 cone_total_len  = (rod_length - handle_length) + cone_overhang; // 117.475 mm
 main_cone_len   = cone_total_len - collar_len - transition_len;
 
+// Segment count for the cone's round cross-sections (transition circle +
+// main taper), kept separate from the file-wide $fn=64 at the top. The
+// rod side has dozens of small circles (pilot holes, standoff bosses,
+// corner fillets) where 64 segments is already smoother than needed —
+// bumping the global $fn to fix the cone's visible faceting would apply
+// that same high segment count to all of those too, slowing every render
+// for no visual benefit. Passing $fn=cone_fn only at the two places the
+// cone actually draws a circle (see cone_family_solid() below) keeps the
+// cone smooth without paying that cost everywhere else.
+cone_fn = 1000;
+
 
 // ---------------------------------------------------------------------------
 // SHARED HELPERS
@@ -289,8 +321,10 @@ module tapered_rect_to_circle(z0, z1, w0, h0, r0, d1) {
 }
 
 // ---------------------------------------------------------------------------
-// ROD — plain hollow square tube, rounded corners, solid cap at the BOTTOM
-// (the free grip end), open at the TOP (where the cone's collar covers it).
+// ROD — plain hollow square tube, rounded corners, solid caps at BOTH the
+// BOTTOM (the free grip end) and the TOP (where the cone's collar covers
+// it) — fully enclosed hollow interior, no open end for the slicer to
+// bridge/support into.
 // ---------------------------------------------------------------------------
 module rod_outer() {
     linear_extrude(height = rod_length) rounded_rect_2d(rod_side, rod_side, rod_corner_r);
@@ -305,9 +339,10 @@ module rod_hollow() {
             translate([0, 0, -1])
                 linear_extrude(height = rod_length + 2)
                     rounded_rect_2d(inner_side, inner_side, inner_r);
-            // caps the BOTTOM (solid grip end), open at the top
-            translate([-100, -100, top_cap_thick])
-                cube([200, 200, rod_length - top_cap_thick + 1]);
+            // caps BOTH ends — bottom_cap_thick at the grip end, top_cap_thick at
+            // the end inside the cone — fully enclosing the hollow interior.
+            translate([-100, -100, bottom_cap_thick])
+                cube([200, 200, rod_length - bottom_cap_thick - top_cap_thick]);
         }
     }
 }
@@ -474,12 +509,26 @@ cradle_chamfer_height = 9;  // mm up from the cradle's bottom edge (computed min
 
 module battery_cradle_corner_chamfers() {
     y_corner = rod_side / 2 + cradle_pocket_depth;
+    // The chamfer polygon's top edge used to sit at exactly y_corner —
+    // exactly coincident with battery_cradle_sleeve()'s own outer face
+    // (that cube's y-max is also rod_side/2 + cradle_pocket_depth). A
+    // cutting face lying exactly flush with the target solid's own face is
+    // a known CGAL hazard: the subtraction can leave a degenerate,
+    // paper-thin sliver right at that seam, and whether it actually shows
+    // up can shift when anything ELSE in the model's CSG tree changes,
+    // even though this geometry itself didn't move. y_overshoot pushes
+    // that one edge slightly past the real face — into open air, where
+    // subtracting does nothing extra — so the cut is never exactly flush
+    // with a real surface. The diagonal notch below (still anchored to the
+    // true y_corner) is unaffected, so the actual chamfer shape is unchanged.
+    y_overshoot = 0.5;
+    y_top = y_corner + y_overshoot;
     for (side = [-1, 1]) {
         x_corner = side * (cradle_outer_l / 2);
         pts = side > 0 ?
-            [[x_corner - cradle_chamfer_leg, y_corner], [x_corner + 2, y_corner],
+            [[x_corner - cradle_chamfer_leg, y_top], [x_corner + 2, y_top],
              [x_corner + 2, y_corner - cradle_chamfer_leg - 2], [x_corner, y_corner - cradle_chamfer_leg]] :
-            [[x_corner + cradle_chamfer_leg, y_corner], [x_corner - 2, y_corner],
+            [[x_corner + cradle_chamfer_leg, y_top], [x_corner - 2, y_top],
              [x_corner - 2, y_corner - cradle_chamfer_leg - 2], [x_corner, y_corner - cradle_chamfer_leg]];
         translate([0, 0, cradle_bottom_z - 0.5])
             linear_extrude(height = cradle_chamfer_height)
@@ -528,9 +577,9 @@ module cone_family_solid(wall_offset) {
     union() {
         linear_extrude(height = collar_len) rounded_rect_2d(sq_side, sq_side, r_corner);
         translate([0, 0, collar_len])
-            tapered_rect_to_circle(0, transition_len, sq_side, sq_side, r_corner, circ_d_trans);
+            tapered_rect_to_circle(0, transition_len, sq_side, sq_side, r_corner, circ_d_trans, $fn = cone_fn);
         translate([0, 0, collar_len + transition_len])
-            cylinder(h = main_cone_len, r1 = circ_d_trans / 2, r2 = circ_r_bottom, $fn = 96);
+            cylinder(h = main_cone_len, r1 = circ_d_trans / 2, r2 = circ_r_bottom, $fn = cone_fn);
     }
 }
 
