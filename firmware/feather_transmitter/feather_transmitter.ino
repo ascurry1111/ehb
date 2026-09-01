@@ -2,10 +2,45 @@
   ============================================================================
   Wireless Handbell — Feather ESP32 V2 Transmitter (BLE-only, low-latency)
   ============================================================================
-  Reads an Adafruit LIS3DH accelerometer, detects a "ring" (a sudden
-  acceleration spike caused by swinging/striking the bell), and transmits
+  Reads an Adafruit LIS3DH accelerometer, detects a "ring" the way a real
+  handbell rings (a forward swing followed by a sudden stop), and transmits
   the event over BLE (GATT notify) to a phone running the Handbell Receiver
   Android app.
+
+  RING DETECTION — modeling a real handbell
+    A real handbell doesn't ring from motion alone. The clapper swings only
+    fore/aft, sprung so it won't strike on the backswing and needs real force
+    to strike at all. What actually rings it: you swing the bell forward, you
+    STOP the bell, and the clapper keeps going and hits the casting.
+
+    So this is not "acceleration exceeded a threshold" (v0.2 and earlier —
+    which is why picking the bell up or tapping the handle would false-trigger).
+    Instead:
+      1. Gravity is separated out with a slow low-pass filter, leaving only
+         linear acceleration. (The old code compared a magnitude that had 1g
+         of gravity baked into it, so orientation alone moved the number.)
+      2. Forward-axis linear acceleration is integrated into a forward
+         VELOCITY, using a leaky integrator so sensor bias can't drift it.
+      3. The detector arms only once that velocity exceeds SWING_ARM_VELOCITY
+         — i.e. the bell is genuinely travelling forward, not just jostled.
+      4. While armed, a sharp deceleration (STOP_DECEL_THRESHOLD) counts as
+         the bell being stopped, and that is what emits the ring.
+
+    Why this rejects the false triggers:
+      - Tapping the handle: large acceleration spike, but it nets ~zero
+        velocity, so the detector never arms.
+      - Picking the bell up: slow, and mostly along gravity rather than the
+        forward axis; doesn't reach arm velocity.
+      - Backswing: arming requires POSITIVE forward velocity, so returning
+        the bell can't ring it — the same asymmetry the clapper springs give
+        a real bell, for free.
+      - Multiple rings per swing: after a ring the detector must see velocity
+        fall back below SWING_RELEASE_VELOCITY before it can re-arm, on top
+        of REFRACTORY_MS.
+
+    IMPORTANT — set FORWARD_AXIS/FORWARD_SIGN below to match how your LIS3DH
+    is actually mounted, or none of this works. Set CALIBRATION_MODE 1 and
+    follow the procedure there; it takes about 30 seconds.
 
   v0.2 NOTE — this variant drops ESP-NOW/WiFi entirely. It was built for a
   live demo where the receiver is an Android phone (Android has no ESP-NOW
@@ -56,12 +91,16 @@
 
   LATENCY TUNING — what changed from v0.1 and why
     - No WiFi/ESP-NOW: one fewer radio stack competing for airtime with BLE.
-    - LIS3DH data rate raised to 1.6kHz (low-power mode, 8-bit resolution).
-      We only need to catch a threshold crossing quickly, not calibrate
-      precisely, so the resolution tradeoff is worth the ~4x faster sampling.
-    - The accelerometer is now polled every loop() iteration with no
-      artificial delay — NimBLE's host/controller stack runs on the other
-      core, so a tight polling loop here doesn't steal its CPU time.
+    - LIS3DH runs at 400Hz in HIGH RESOLUTION (12-bit) mode. v0.2 used
+      1.6kHz low-power (8-bit) on the theory that raw sample rate was all
+      that mattered, but the ring detector now integrates acceleration into
+      velocity, and 8-bit data is too coarse to integrate without the bias
+      error swamping the result. 400Hz still gives 2.5ms granularity, which
+      is far below the ~10ms of BLE latency downstream, so this costs
+      nothing perceptible and buys much cleaner detection.
+    - Sampling is paced to the sensor's output rate rather than polled flat
+      out — reading faster than the ODR just re-reads the same sample and
+      wastes I2C bandwidth that BLE could be using.
     - The BLE connection interval is renegotiated down to 7.5–15ms with
       zero slave latency as soon as a phone connects, via
       NimBLEServer::updateConnParams(). Default negotiated intervals can
@@ -80,8 +119,71 @@
 // ---------------------------------------------------------------------------
 // CONFIG — tune these for your bell / mounting
 // ---------------------------------------------------------------------------
-#define RING_THRESHOLD_G     2.2f   // magnitude (in g) above which we call it a "ring"
-#define REFRACTORY_MS        150    // minimum gap between two ring events (debounce)
+// --- Mounting orientation --------------------------------------------------
+// Which LIS3DH axis points in the direction the bell travels when swung
+// forward, and which sign of that axis is "forward". THIS MUST MATCH YOUR
+// PHYSICAL MOUNTING — see CALIBRATION_MODE below to determine it empirically.
+#define AXIS_X 0
+#define AXIS_Y 1
+#define AXIS_Z 2
+#define FORWARD_AXIS   AXIS_Y
+#define FORWARD_SIGN   (+1.0f)
+
+// Set to 1, reflash, and open Serial Monitor at 115200 to identify the
+// forward axis:
+//   1. Hold the bell still in the ready position. Whichever of the three g=[]
+//      numbers sits near ±9.8 is the axis pointing along gravity — it is NOT
+//      your forward axis.
+//   2. Swing the bell forward normally and watch lin=[]. The axis that swings
+//      strongly POSITIVE as the bell moves forward is FORWARD_AXIS with
+//      FORWARD_SIGN +1.0. If it swings strongly negative instead, that's your
+//      axis with FORWARD_SIGN -1.0.
+//   3. Set FORWARD_AXIS/FORWARD_SIGN above, set this back to 0, reflash.
+// With the correct settings, vFwd should read strongly positive during a
+// forward swing and near zero when the bell is at rest.
+#define CALIBRATION_MODE 0
+
+// --- Ring detection tuning -------------------------------------------------
+#define SAMPLE_INTERVAL_US      2500   // 400Hz, matching the LIS3DH ODR set in setup()
+
+// Gravity is tracked with a slow low-pass filter and subtracted off. Alpha is
+// per-sample; 0.997 at 400Hz is a ~1s time constant — slow enough that a swing
+// (a few hundred ms) doesn't get absorbed into the gravity estimate, fast
+// enough to follow the bell being reoriented between rings.
+//
+// KNOWN LIMITATION: the bell rotates through its swing arc, so gravity rotates
+// in the sensor's frame faster than this filter tracks it, and some gravity
+// leaks into the "linear" acceleration. With only an accelerometer there's no
+// clean fix — you can't separate rotation from translation from one sensor.
+// It's why the thresholds below need empirical tuning rather than being
+// derivable on paper. If it ever proves limiting, a 6-DOF IMU with a gyro
+// (e.g. LSM6DS3) would let a complementary filter track orientation properly.
+#define GRAVITY_LPF_ALPHA       0.997f
+
+// Per-sample decay on the velocity integrator (~0.5s time constant at 400Hz).
+// This is what keeps accelerometer bias from integrating into phantom velocity.
+#define VELOCITY_DECAY          0.995f
+
+// Forward speed (m/s) the bell must reach before a stop counts as a ring.
+// RAISE THIS if gentle handling still rings it; LOWER it if genuine swings
+// are being missed.
+#define SWING_ARM_VELOCITY      0.70f
+
+// Velocity must fall back below this (m/s) before another ring can arm.
+#define SWING_RELEASE_VELOCITY  0.25f
+
+// Deceleration (m/s^2, opposing the swing) that counts as "the bell stopped".
+// ~15 m/s^2 is about 1.5g. RAISE THIS if soft stops ring; LOWER it if you
+// have to stop the bell unnaturally hard to get a ring.
+#define STOP_DECEL_THRESHOLD    15.0f
+
+// Below this linear acceleration (m/s^2) the bell is considered at rest, and
+// after REST_SAMPLES_REQUIRED consecutive samples the velocity integrator is
+// zeroed outright to kill any residual drift.
+#define REST_ACCEL_THRESHOLD    0.60f
+#define REST_SAMPLES_REQUIRED   40     // 100ms at 400Hz
+
+#define REFRACTORY_MS           250    // minimum gap between two ring events
 
 // Random-but-fixed UUIDs for the BLE service/characteristic. Must match the
 // UUIDs the Android app scans/subscribes for (see android/.../RingEvent.kt).
@@ -127,7 +229,27 @@ NimBLECharacteristic* timeCharacteristic = nullptr;
 bool bleClientConnected = false;
 
 uint32_t ringCounter = 0;
-uint32_t lastRingMillis = 0;
+
+// --- Ring detection state --------------------------------------------------
+enum RingState : uint8_t {
+  RING_IDLE,        // waiting for a real forward swing to build up
+  RING_SWINGING,    // armed: bell is moving forward fast enough to ring on a stop
+  RING_REFRACTORY,  // just rang; waiting for the swing to settle before re-arming
+};
+
+RingState ringState = RING_IDLE;
+unsigned long refractoryUntilMs = 0;
+unsigned long lastSampleUs = 0;
+
+// Running gravity estimate (low-pass filtered raw acceleration).
+bool gravityInitialized = false;
+float gravityX = 0, gravityY = 0, gravityZ = 0;
+
+// Leaky-integrated forward velocity, and per-swing peaks for the ring payload.
+float forwardVelocity = 0;
+float peakLinearAccel = 0;
+float peakForwardVelocity = 0;
+int restSamples = 0;
 
 // Wire-format packet sent as the BLE notify payload.
 // Keep this tiny and fixed-size — must match RingEvent.kt on the Android side.
@@ -292,8 +414,18 @@ void setup() {
     while (1) delay(1000);
   }
   lis.setRange(LIS3DH_RANGE_4_G);
-  lis.setDataRate(LIS3DH_DATARATE_LOWPOWER_1K6HZ);  // fastest ODR available, for lowest detection latency
-  Serial.println("LIS3DH ready.");
+  // 12-bit high resolution at 400Hz. The detector integrates acceleration into
+  // velocity, so resolution matters more here than raw sample rate — see the
+  // LATENCY TUNING note in the header.
+  lis.setPerformanceMode(LIS3DH_MODE_HIGH_RESOLUTION);
+  lis.setDataRate(LIS3DH_DATARATE_400_HZ);
+  Serial.println("LIS3DH ready (400Hz, 12-bit).");
+#if CALIBRATION_MODE
+  Serial.println("\n*** CALIBRATION MODE — no rings will be sent. ***");
+  Serial.println("Hold still to find the gravity axis, then swing forward and");
+  Serial.println("watch which lin[] axis goes strongly positive. See the notes");
+  Serial.println("above CALIBRATION_MODE in this sketch.\n");
+#endif
 
   // --- BLE (NimBLE) ---
   NimBLEDevice::init(BLE_DEVICE_NAME);
@@ -338,45 +470,138 @@ void setup() {
 }
 
 // ---------------------------------------------------------------------------
-// LOOP — poll accelerometer as fast as possible, detect ring, transmit
+// RING EMISSION
+// ---------------------------------------------------------------------------
+void emitRing(unsigned long nowMs) {
+  ringCounter++;
+
+  RingEvent evt;
+  evt.ringId = ringCounter;
+  // Peak LINEAR acceleration during the swing, in milli-g. Note this no longer
+  // includes gravity the way v0.2's value did, so the tone-strength buckets in
+  // the Android app's RingPlayer.BUCKETS may want retuning.
+  float peakMilliG = (peakLinearAccel / 9.80665f) * 1000.0f;
+  evt.peakMilliG = (uint16_t)constrain(peakMilliG, 0.0f, 65535.0f);
+  evt.timestampMs = nowMs;
+
+  Serial.printf("RING #%lu  peak=%.2fg  swing=%.2fm/s\n",
+                (unsigned long)evt.ringId, evt.peakMilliG / 1000.0f, peakForwardVelocity);
+
+  if (bleClientConnected && ringCharacteristic) {
+    ringCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
+    ringCharacteristic->notify();
+  }
+
+  peakLinearAccel = 0;
+  peakForwardVelocity = 0;
+}
+
+// ---------------------------------------------------------------------------
+// LOOP — sample accelerometer, run the swing/stop detector, transmit
 // ---------------------------------------------------------------------------
 void loop() {
-  unsigned long now = millis();
+  unsigned long nowMs = millis();
+  unsigned long nowUs = micros();
+
+  // Pace sampling to the sensor's ODR; polling faster just re-reads the same
+  // sample. Battery telemetry still gets a chance to run on skipped iterations.
+  if ((unsigned long)(nowUs - lastSampleUs) < SAMPLE_INTERVAL_US) {
+    sampleBatteryIfDue(nowMs);
+    return;
+  }
+  float dt = (nowUs - lastSampleUs) / 1000000.0f;
+  lastSampleUs = nowUs;
+  // Guard the first iteration (and any stall) from producing a huge dt that
+  // would slam the integrator.
+  if (dt > 0.05f) dt = 0.05f;
 
   sensors_event_t event;
   lis.getEvent(&event);
+  float ax = event.acceleration.x;   // m/s^2, gravity included
+  float ay = event.acceleration.y;
+  float az = event.acceleration.z;
 
-  // Magnitude of the acceleration vector, in g. At rest this reads ~1.0g (gravity).
-  float ax = event.acceleration.x / 9.80665f;
-  float ay = event.acceleration.y / 9.80665f;
-  float az = event.acceleration.z / 9.80665f;
-  float magnitude = sqrtf(ax * ax + ay * ay + az * az);
-
-  static float peakSinceLastRing = 0;
-  if (magnitude > peakSinceLastRing) peakSinceLastRing = magnitude;
-
-  bool pastThreshold = magnitude > RING_THRESHOLD_G;
-  bool pastRefractory = (now - lastRingMillis) > REFRACTORY_MS;
-
-  if (pastThreshold && pastRefractory) {
-    lastRingMillis = now;
-    ringCounter++;
-
-    RingEvent evt;
-    evt.ringId = ringCounter;
-    evt.peakMilliG = (uint16_t)(peakSinceLastRing * 1000.0f);
-    evt.timestampMs = now;
-    peakSinceLastRing = 0;
-
-    Serial.printf("RING #%lu  peak=%.2fg\n", (unsigned long)evt.ringId, evt.peakMilliG / 1000.0f);
-
-    if (bleClientConnected && ringCharacteristic) {
-      ringCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
-      ringCharacteristic->notify();
-    }
+  // --- Separate gravity from linear acceleration ---------------------------
+  if (!gravityInitialized) {
+    gravityX = ax; gravityY = ay; gravityZ = az;
+    gravityInitialized = true;
+  } else {
+    gravityX = GRAVITY_LPF_ALPHA * gravityX + (1.0f - GRAVITY_LPF_ALPHA) * ax;
+    gravityY = GRAVITY_LPF_ALPHA * gravityY + (1.0f - GRAVITY_LPF_ALPHA) * ay;
+    gravityZ = GRAVITY_LPF_ALPHA * gravityZ + (1.0f - GRAVITY_LPF_ALPHA) * az;
   }
+  float linX = ax - gravityX;
+  float linY = ay - gravityY;
+  float linZ = az - gravityZ;
+  float linMag = sqrtf(linX * linX + linY * linY + linZ * linZ);
+
+  float aForward = FORWARD_SIGN * (FORWARD_AXIS == AXIS_X ? linX
+                                 : FORWARD_AXIS == AXIS_Y ? linY
+                                                          : linZ);
+
+  // --- Integrate to forward velocity (leaky, so bias can't accumulate) -----
+  forwardVelocity = forwardVelocity * VELOCITY_DECAY + aForward * dt;
+
+  // When the bell is genuinely still, zero the integrator outright.
+  if (linMag < REST_ACCEL_THRESHOLD) {
+    if (restSamples < REST_SAMPLES_REQUIRED) {
+      restSamples++;
+    } else {
+      forwardVelocity = 0.0f;
+    }
+  } else {
+    restSamples = 0;
+  }
+
+  if (linMag > peakLinearAccel) peakLinearAccel = linMag;
+  if (forwardVelocity > peakForwardVelocity) peakForwardVelocity = forwardVelocity;
+
+#if CALIBRATION_MODE
+  static unsigned long lastCalPrintMs = 0;
+  if (nowMs - lastCalPrintMs >= 50) {
+    lastCalPrintMs = nowMs;
+    Serial.printf("g=[%6.2f %6.2f %6.2f]  lin=[%6.2f %6.2f %6.2f]  vFwd=%6.2f\n",
+                  gravityX, gravityY, gravityZ, linX, linY, linZ, forwardVelocity);
+  }
+#else
+  // --- Swing / stop state machine ------------------------------------------
+  switch (ringState) {
+    case RING_IDLE:
+      // Arm only once the bell is genuinely travelling forward. A tap on the
+      // handle spikes acceleration but nets ~zero velocity, so it stops here.
+      if (forwardVelocity >= SWING_ARM_VELOCITY) {
+        ringState = RING_SWINGING;
+      }
+      break;
+
+    case RING_SWINGING:
+      if (aForward <= -STOP_DECEL_THRESHOLD) {
+        // Sharp deceleration opposing the swing: the bell has been stopped,
+        // which is the moment a real clapper would strike.
+        emitRing(nowMs);
+        ringState = RING_REFRACTORY;
+        refractoryUntilMs = nowMs + REFRACTORY_MS;
+      } else if (forwardVelocity < SWING_RELEASE_VELOCITY) {
+        // Swing petered out without a definite stop — no ring.
+        ringState = RING_IDLE;
+        peakLinearAccel = 0;
+        peakForwardVelocity = 0;
+      }
+      break;
+
+    case RING_REFRACTORY:
+      // Require BOTH the refractory window to expire and the swing to actually
+      // settle, so one vigorous motion can't produce a burst of rings.
+      if (nowMs >= refractoryUntilMs && forwardVelocity < SWING_RELEASE_VELOCITY) {
+        ringState = RING_IDLE;
+        peakLinearAccel = 0;
+        peakForwardVelocity = 0;
+      }
+      break;
+  }
+#endif
 
   // Low priority — runs after ring detection, and is a no-op almost every
   // iteration (see the comment on the function itself).
-  sampleBatteryIfDue(now);
+  sampleBatteryIfDue(nowMs);
 }

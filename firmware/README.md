@@ -29,7 +29,8 @@ If you have the STEMMA QT versions of both boards, just use the STEMMA QT cable 
 
 ## Bring-up order (v0.2, BLE-only demo path)
 
-1. **Flash `feather_transmitter.ino`** to the Feather. Open its Serial Monitor at 115200 baud — you should see its BLE address printed, then `RING #n peak=...g` lines whenever you swing/tap the accelerometer.
+0. **Set the mounting orientation first** — see [Ring detection](#ring-detection) below. Nothing will trigger correctly until `FORWARD_AXIS`/`FORWARD_SIGN` match your physical mounting.
+1. **Flash `feather_transmitter.ino`** to the Feather. Open its Serial Monitor at 115200 baud — you should see its BLE address printed, then `RING #n peak=...g swing=...m/s` lines whenever you swing the bell forward and stop it.
 2. **Test the BLE → PC path** (quick sanity check without the phone app): run `pc_ble_listener.py`. Swing the bell — you should hear a tone on the PC.
 3. **Test the BLE → phone path**: build and run the Android app in
    [`../android/HandbellReceiver`](../android/HandbellReceiver) on the demo
@@ -45,13 +46,51 @@ If you have the STEMMA QT versions of both boards, just use the STEMMA QT cable 
 5. **Test the ESP-NOW → PC path**: run `pc_serial_listener.py --list` to find the DEVKITC-V4's port, then `pc_serial_listener.py --port <that port>`. Swing the bell — you should hear a tone.
 6. **Test the BLE → PC path**: run `pc_ble_listener.py` (the DEVKITC-V4 isn't involved in this path at all — the Feather talks straight to the PC's Bluetooth radio). Swing the bell — you should hear a tone.
 
-## Tuning ring detection
+## Ring detection
 
-If it's not triggering, or triggering too easily, adjust in `feather_transmitter.ino`:
-- `RING_THRESHOLD_G` — lower it if gentle swings aren't detected, raise it if it false-triggers from handling/vibration.
-- `REFRACTORY_MS` — raise it if one swing is registering as multiple rings.
+Detection models how a real handbell actually rings — a forward swing followed
+by a **sudden stop** (which is when the clapper catches up and strikes) — rather
+than "acceleration crossed a threshold," which is why earlier versions rang when
+you merely picked the bell up or tapped the handle. See the `RING DETECTION`
+comment at the top of `feather_transmitter.ino` for the full rationale.
 
-Print the raw `magnitude` value over Serial for a bit while you swing the bell by hand — that'll tell you what threshold actually separates "resting/handling" from "ring."
+### First: set the mounting orientation
+
+**Detection will not work until `FORWARD_AXIS` / `FORWARD_SIGN` match how your
+LIS3DH is physically mounted.** To find them, set `CALIBRATION_MODE 1`, reflash,
+and open Serial Monitor at 115200:
+
+1. Hold the bell still in the ready position. Whichever `g=[]` value sits near
+   ±9.8 is the axis pointing along gravity — that is *not* your forward axis.
+2. Swing the bell forward and watch `lin=[]`. The axis that swings strongly
+   **positive** as the bell moves forward is `FORWARD_AXIS`, with
+   `FORWARD_SIGN +1.0`. If it swings strongly negative, same axis but
+   `FORWARD_SIGN -1.0`.
+3. Set both, return `CALIBRATION_MODE` to `0`, reflash.
+
+Sanity check: with the right settings, `vFwd` reads strongly positive during a
+forward swing and near zero at rest.
+
+### Then: tune the thresholds
+
+These interact, so change one at a time and watch the `RING #n peak=..g
+swing=..m/s` lines while ringing by hand:
+
+- `SWING_ARM_VELOCITY` (m/s) — how fast the bell must actually be travelling
+  forward before a stop can ring it. **Raise it** if handling still rings the
+  bell; **lower it** if genuine swings are missed. Compare against the
+  `swing=` figure printed on each ring.
+- `STOP_DECEL_THRESHOLD` (m/s²) — how abruptly the bell must stop. **Raise it**
+  if soft stops ring; **lower it** if you have to stop the bell unnaturally
+  hard.
+- `SWING_RELEASE_VELOCITY` / `REFRACTORY_MS` — raise if one motion produces
+  multiple rings.
+
+The defaults are reasoned starting points, not measured ones — expect to adjust
+them against your actual bell. Some of that is unavoidable: with only an
+accelerometer, bell rotation during the swing leaks a little gravity into the
+forward axis (see the `KNOWN LIMITATION` note in the sketch), so the right
+thresholds are empirical rather than derivable.
 
 ## Android
 

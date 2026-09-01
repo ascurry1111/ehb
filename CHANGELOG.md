@@ -25,6 +25,16 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   own clock and the Feather's `millis()`, so `RingEvent.timestampMs` can be
   compared against the phone's clock. Breaks the total down into
   ring→phone (BLE) and phone→sound (app) legs.
+- Ring detection rewritten to model real handbell physics: a forward swing
+  followed by a sudden stop, rather than a bare acceleration threshold.
+  Gravity is now filtered out, forward acceleration is integrated into a
+  velocity, and a ring fires only when the bell was genuinely travelling
+  forward and then decelerated sharply. This rejects the old false triggers
+  (picking the bell up, tapping the handle, backswing, and bursts of
+  multiple rings per motion). LIS3DH moved to 400Hz/12-bit high-resolution,
+  since the velocity integration needs resolution more than raw sample rate.
+  Requires setting `FORWARD_AXIS`/`FORWARD_SIGN` for your mounting — there's
+  a `CALIBRATION_MODE` to determine them.
 - UI pass: battery moved to a small, dim top-left corner (out of the way);
   latency defaults to just the total, tap it to toggle the breakdown; added
   a scrolling ring log (newest first, same info as "last ring") with a
