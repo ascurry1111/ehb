@@ -61,7 +61,7 @@
             android:textColor="#CCCCCC"
             android:textSize="16sp" />
 
-        <!-- Tap to toggle the ring→phone / phone→sound breakdown -- deliberately no
+        <!-- Tap to toggle the ring→phone / phone→sound breakdown — deliberately no
              visible button chrome for this, per the "unobtrusive" ask. -->
         <TextView
             android:id="@+id/tvLatency"
