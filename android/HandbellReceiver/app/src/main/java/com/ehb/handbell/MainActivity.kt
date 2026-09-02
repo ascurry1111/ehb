@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPitchUp: Button
     private lateinit var spinnerInstrument: Spinner
     private lateinit var lvRingLog: ListView
+    private lateinit var busyOverlay: android.view.View
     private lateinit var rootView: android.view.View
 
     private lateinit var ringPlayer: RingPlayer
@@ -101,6 +102,7 @@ class MainActivity : AppCompatActivity() {
         btnPitchUp = findViewById(R.id.btnPitchUp)
         spinnerInstrument = findViewById(R.id.spinnerInstrument)
         lvRingLog = findViewById(R.id.lvRingLog)
+        busyOverlay = findViewById(R.id.busyOverlay)
 
         ringLogAdapter = ArrayAdapter(this, R.layout.item_ring_log, R.id.tvRingLogItem, mutableListOf<String>())
         lvRingLog.adapter = ringLogAdapter
@@ -128,6 +130,9 @@ class MainActivity : AppCompatActivity() {
         } ?: Instrument.BELL
 
         ringPlayer = RingPlayer(this)
+        ringPlayer.setOnBusyChangedListener { busy ->
+            runOnUiThread { busyOverlay.visibility = if (busy) android.view.View.VISIBLE else android.view.View.GONE }
+        }
         ringPlayer.prepare(savedPitch, savedInstrument)
         setUpPitchSpinner(savedPitch)
         setUpInstrumentSpinner(savedInstrument)

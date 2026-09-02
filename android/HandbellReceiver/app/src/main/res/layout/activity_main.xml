@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -207,3 +211,35 @@
         android:scrollbars="vertical" />
 
 </LinearLayout>
+
+<!-- Shown while RingPlayer is re-synthesizing an instrument change. clickable+focusable
+     with no listener is the standard trick to make an overlay swallow touches to
+     everything behind it, so the pitch/instrument controls can't be poked again mid-change
+     and start a second overlapping request. See RingPlayer.setOnBusyChangedListener. -->
+<LinearLayout
+    android:id="@+id/busyOverlay"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="#DD000000"
+    android:clickable="true"
+    android:focusable="true"
+    android:visibility="gone">
+
+    <ProgressBar
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/tvBusyMessage"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Changing instrument…"
+        android:textColor="#FFFFFF"
+        android:textSize="18sp" />
+
+</LinearLayout>
+
+</FrameLayout>

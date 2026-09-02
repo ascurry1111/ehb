@@ -186,6 +186,20 @@ class RingPlayer(private val context: Context) {
     @Volatile private var activeStreamId: Int? = null
     @Volatile private var activeVolume: Float = 0f
 
+    // Set true for the duration of an instrument change's re-synthesis (NOT a pitch
+    // change -- hearing the old pitch briefly during a transition is a harmless
+    // approximation, but hearing the wrong INSTRUMENT is genuinely confusing, so
+    // instrument changes suppress playback entirely instead of falling back to the
+    // old voice). onBusyChanged lets the UI grey out and show a status message while
+    // this is true, so a ring that lands mid-change doesn't play silently with no
+    // explanation.
+    @Volatile private var blockPlaybackWhileBusy = false
+    @Volatile private var onBusyChanged: ((Boolean) -> Unit)? = null
+
+    fun setOnBusyChangedListener(listener: (Boolean) -> Unit) {
+        onBusyChanged = listener
+    }
+
     /** Synthesizes and loads one tone per DynamicLevel at the given pitch/instrument.
      *  Call once, off the main thread is fine (this kicks off a background thread itself). */
     fun prepare(pitch: HandbellPitch = HandbellPitches.DEFAULT, instrument: Instrument = Instrument.BELL) {
@@ -208,9 +222,13 @@ class RingPlayer(private val context: Context) {
     }
 
     /** Re-synthesizes all six tones with a new instrument voice, at the current pitch, on
-     *  a background thread. Same safety properties as setPitch(). */
+     *  a background thread. Unlike setPitch(), playback is suppressed entirely (via
+     *  onBusyChanged) until the new voice is ready, rather than falling back to the old
+     *  one -- see the field doc on blockPlaybackWhileBusy for why. */
     fun setInstrument(instrument: Instrument) {
         currentInstrument = instrument
+        blockPlaybackWhileBusy = true
+        onBusyChanged?.invoke(true)
         synthesizeAllAsync(currentPitchIndex, instrument)
     }
 
@@ -248,28 +266,46 @@ class RingPlayer(private val context: Context) {
         val baseFreqHz = HandbellPitches.ALL[pitchIndex].frequencyHz
         val generation = pitchGeneration.incrementAndGet()
         Thread({
-            val ids = DynamicLevel.entries.associateWith { level ->
-                val samples = synthesizeTone(instrument, level.representativePeakG.toDouble(), baseFreqHz)
-                val file = File.createTempFile("bell_tone_", ".wav", context.cacheDir)
-                writeWavFile(file, samples, SAMPLE_RATE)
-                soundPool.load(file.absolutePath, 1)
-            }
-            if (generation == pitchGeneration.get()) {
-                // Still current. Swap in the new tones and drop the old ones --
-                // but only now, so play() always has a usable set.
-                val old = soundIdByLevel
-                soundIdByLevel = ids
-                ready = true
-                basePitchIndex = pitchIndex
-                updatePlaybackRateFromOffset()
-                old.values.forEach { soundPool.unload(it) }
-                Log.i(TAG, "Loaded ${ids.size} $instrument tone variants at ${baseFreqHz}Hz.")
-            } else {
-                // Superseded by a newer change before this one finished --
-                // discard rather than swap in stale tones.
-                ids.values.forEach { soundPool.unload(it) }
+            try {
+                val ids = DynamicLevel.entries.associateWith { level ->
+                    val samples = synthesizeTone(instrument, level.representativePeakG.toDouble(), baseFreqHz)
+                    val file = File.createTempFile("bell_tone_", ".wav", context.cacheDir)
+                    writeWavFile(file, samples, SAMPLE_RATE)
+                    soundPool.load(file.absolutePath, 1)
+                }
+                if (generation == pitchGeneration.get()) {
+                    // Still current. Swap in the new tones and drop the old ones --
+                    // but only now, so play() always has a usable set.
+                    val old = soundIdByLevel
+                    soundIdByLevel = ids
+                    ready = true
+                    basePitchIndex = pitchIndex
+                    updatePlaybackRateFromOffset()
+                    old.values.forEach { soundPool.unload(it) }
+                    Log.i(TAG, "Loaded ${ids.size} $instrument tone variants at ${baseFreqHz}Hz.")
+                    clearBusyIfCurrent(generation)
+                } else {
+                    // Superseded by a newer change before this one finished --
+                    // discard rather than swap in stale tones.
+                    ids.values.forEach { soundPool.unload(it) }
+                }
+            } catch (e: Exception) {
+                // Whatever went wrong, don't leave the UI grey-locked forever over it --
+                // that's a much worse failure than one missed tone change now that
+                // setInstrument() blocks playback and the UI while this runs.
+                Log.e(TAG, "Synthesis failed for generation $generation", e)
+                clearBusyIfCurrent(generation)
             }
         }, "RingPlayer-prepare").start()
+    }
+
+    /** Only clears the busy flag if this is still the most recent request -- an older,
+     *  superseded attempt failing shouldn't clear a busy state a newer one just set. */
+    private fun clearBusyIfCurrent(generation: Int) {
+        if (generation == pitchGeneration.get() && blockPlaybackWhileBusy) {
+            blockPlaybackWhileBusy = false
+            onBusyChanged?.invoke(false)
+        }
     }
 
     /** Trigger playback for a ring with the given peak acceleration (in g). Cheap — safe to
@@ -277,6 +313,10 @@ class RingPlayer(private val context: Context) {
     fun play(peakG: Float) {
         if (!ready) {
             Log.w(TAG, "play() called before tones finished loading — dropping.")
+            return
+        }
+        if (blockPlaybackWhileBusy) {
+            Log.i(TAG, "play() called during an instrument change — dropping to avoid the wrong voice.")
             return
         }
         // A new strike replaces the currently sounding tone -- see the

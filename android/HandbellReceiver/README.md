@@ -243,9 +243,21 @@ built and reasoned about correctly without a real device to test against
 throughout.
 
 Switching instruments takes the same background re-synthesis path as the
-pitch dropdown (~1s, old tones stay playable meanwhile) — there's no fast
-nudge equivalent for this one, since instrument choice is an occasional
-per-demo setting rather than something changed rapidly mid-performance.
+pitch dropdown (~1s) — there's no fast nudge equivalent for this one, since
+instrument choice is an occasional per-demo setting rather than something
+changed rapidly mid-performance.
+
+**Unlike a pitch change, an instrument change blocks rather than falls back.**
+Hearing the old *pitch* for one more ring during a pitch-dropdown transition
+is a harmless, barely-noticeable approximation. Hearing the *wrong instrument
+entirely* is not — it reads as a bug, not a brief delay. So while
+`RingPlayer.setPitch()` keeps the previous tones playable until the new ones
+land, `setInstrument()` suppresses playback outright for that window (a ring
+that lands mid-change is still counted/logged normally — only its *sound* is
+dropped) and drives a full-screen overlay (`busyOverlay` in
+`activity_main.xml`, wired via `RingPlayer.setOnBusyChangedListener`) that
+also blocks touches to the rest of the UI, so the pitch/instrument controls
+can't be poked again mid-change to start a second overlapping request.
 
 **Known limitation:** Karplus-Strong's delay line length must be a whole
 number of samples, so tuning accuracy degrades at high pitches where

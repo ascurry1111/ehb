@@ -154,6 +154,19 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   large bundled asset that couldn't be built and verified without a real
   device to test against throughout — see the "Instruments" section of the
   Android README for the full reasoning.
+- Instrument changes now block rather than fall back. Hearing the old pitch
+  for one more ring mid-transition is harmless; hearing the wrong instrument
+  entirely reads as a bug, not a brief delay. `RingPlayer.setInstrument()`
+  now suppresses playback for the ~1s re-synthesis window (a ring landing
+  mid-change is still counted/logged, just silently — only its sound is
+  dropped) and a new `setOnBusyChangedListener` drives a full-screen
+  overlay with a status message that also blocks touches to the rest of
+  the UI, so the controls can't be poked again mid-change to start a
+  second overlapping request. Pitch changes are unaffected and keep their
+  existing fall-back-to-old-tone behavior. Synthesis failures (e.g. an
+  unexpected exception mid-render) now always clear the busy state rather
+  than risking a permanently grey-locked UI, given the new stakes of
+  leaving it stuck.
 
 ## v0.1 — 2026-08-29
 
