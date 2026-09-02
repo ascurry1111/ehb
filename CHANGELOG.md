@@ -193,6 +193,16 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   constants are expressed in samples, not time, and would silently change
   meaning).
 
+- App launcher icon, replacing the stock Android placeholder: the gold
+  casting tipped 45° (mouth up-left, handle down-right, matching the build
+  photo) over a radial champagne-to-slate-grey gradient, with a small
+  Bluetooth badge upper right. Pure vector adaptive icon — two
+  `VectorDrawable`s, no raster assets at any density, and no legacy PNG
+  fallback needed since `minSdk` is 31. The bell is authored upright and
+  tipped by a single group rotation, so the geometry stays editable; every
+  point is inside the radius-36 adaptive-icon safe zone (values checked and
+  recorded in the file header).
+
 ## v0.1 — 2026-08-29
 
 Initial prototype.

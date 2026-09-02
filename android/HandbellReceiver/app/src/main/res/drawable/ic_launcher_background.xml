@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon background: a two-stop radial gradient, soft champagne at the
+  centre falling off to a neutral slate grey at the rim.
+
+  Drawn edge-to-edge across the full 108x108 adaptive-icon canvas (not just the
+  72x72 safe zone) because the launcher masks this layer to whatever shape the
+  device uses (circle, squircle, rounded square) and any uncovered corner
+  would show through as a hard edge. gradientRadius is 78 so the gradient still
+  has colour left at the corners, which sit ~76 units from centre.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="78"
+                android:startColor="#F7E7CE"
+                android:endColor="#708090" />
+        </aapt:attr>
+    </path>
+</vector>

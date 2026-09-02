@@ -298,3 +298,38 @@ achievable length is audibly sharp or flat by close to a semitone. Fixable
 with fractional-delay interpolation; not implemented, since the guitar
 voices are unlikely to be played at the very top of a handbell set's range
 in practice.
+
+## App icon
+
+The launcher icon is a stylised version of the physical bell: the gold
+casting tipped 45° with the mouth up-left and handle down-right (matching
+the build photo), over a radial gradient from soft champagne at the centre
+to neutral slate grey at the rim, with a small Bluetooth badge upper right.
+
+It's **pure vector** — two `VectorDrawable`s
+([`ic_launcher_background.xml`](app/src/main/res/drawable/ic_launcher_background.xml),
+[`ic_launcher_foreground.xml`](app/src/main/res/drawable/ic_launcher_foreground.xml))
+composed as an adaptive icon. No raster assets, so it stays sharp at every
+density and there are no PNGs to regenerate when the design changes.
+
+Two things worth knowing before editing it:
+
+- **The bell is authored upright and tipped by one group rotation.** Every
+  coordinate in the foreground is in vertical space, with a single
+  `android:rotation="-45"` on the enclosing group doing the tilt. Editing
+  the shape means editing sensible vertical coordinates; hand-computing
+  rotated ones would be miserable and pointless.
+- **Everything sits inside a radius-36 circle around (54,54).** Adaptive
+  icons are 108×108 but only the central 72×72 is guaranteed unmasked, and
+  launchers mask to different shapes. Rotation preserves distance from the
+  pivot, so the safe-zone check is just "is every authored point within 36
+  of centre" — the values are listed in the file's header comment. The
+  Bluetooth badge is the tightest at 35.4, so give it room if you move it.
+
+There's no legacy PNG fallback and none is needed: `minSdk` is 31, so every
+device that can install this supports `mipmap-anydpi-v26`.
+
+Not implemented: a `<monochrome>` layer for Android 13+ themed icons. That
+only appears if the user has themed icons switched on (off by default), so
+it's polish rather than a gap — but it's the obvious next addition if the
+icon ever looks out of place on a themed home screen.

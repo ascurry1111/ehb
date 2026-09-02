@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon foreground: the handbell, tipped 45 degrees with the mouth up-left
+  and the handle down-right (matching the build photo), plus a small Bluetooth
+  badge in the upper right.
+
+  GEOMETRY NOTE: the bell is authored UPRIGHT (mouth at top, handle straight down)
+  and then tipped by a single group rotation of -45 degrees about the canvas centre.
+  Every coordinate below is therefore in easy-to-reason-about vertical space;
+  working out the rotated coordinates by hand would have made this unmaintainable
+  for no benefit, since a group rotation is exact.
+
+  SAFE ZONE: adaptive icons are 108x108 but only the central 72x72 (a radius-36
+  circle around 54,54) is guaranteed unmasked. Rotation preserves distance from the
+  pivot, so it's enough that every authored point sits inside that radius:
+    mouth rim extremes (34,27)/(74,27) -> 33.6      mouth top (54,21) -> 33.0
+    handle foot (55,86)               -> 32.0      Bluetooth badge edge -> 35.4
+  All clear of 36, with the badge deliberately the tightest since it's decorative.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <group
+        android:name="bell"
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="-45">
+
+        <!--
+          Mouth, drawn in three stacked pieces so the bell reads as OPEN rather
+          than as a flat cone. Painting order matters:
+            1. outer rim ellipse (lighter gold)
+            2. inner opening ellipse (dark) - slightly smaller, so a gold crescent
+               of rim stays visible around it
+            3. the cone body below, whose top edge is exactly the outer ellipse's
+               front half - so it covers the near half of both ellipses, leaving
+               only the far half showing. That's what sells "looking into the bell."
+        -->
+
+        <!-- 1. Outer rim: ellipse centred (54,27), rx 20, ry 6. Four cubic quarters
+                (control offset = radius * 0.5523, the standard circle/ellipse
+                Bezier constant) rather than arc commands, which are ambiguous for
+                exact half-ellipses. -->
+        <path
+            android:pathData="M34,27
+                C34,23.69 42.95,21 54,21
+                C65.05,21 74,23.69 74,27
+                C74,30.31 65.05,33 54,33
+                C42.95,33 34,30.31 34,27 Z"
+            android:fillColor="#E8B830" />
+
+        <!-- 2. Inner opening: ellipse centred (54,27.4), rx 16.8, ry 4.8. -->
+        <path
+            android:pathData="M37.2,27.4
+                C37.2,24.75 44.72,22.6 54,22.6
+                C63.28,22.6 70.8,24.75 70.8,27.4
+                C70.8,30.05 63.28,32.2 54,32.2
+                C44.72,32.2 37.2,30.05 37.2,27.4 Z"
+            android:fillColor="#6B4A08" />
+
+        <!-- 3. Cone body. Top edge duplicates the outer ellipse's front half
+                exactly, then flares down to the shoulder at y=63. The linear
+                gradient runs across the bell (x 34..74) to give the bright
+                specular stripe the real casting has; because it's inside the
+                rotated group, it tips with the bell automatically. -->
+        <path android:pathData="M34,27
+                C34,30.31 42.95,33 54,33
+                C65.05,33 74,30.31 74,27
+                C74,44 65,56 60.5,63
+                L47.5,63
+                C43,56 34,44 34,27 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="34" android:startY="0"
+                    android:endX="74" android:endY="0"
+                    android:startColor="#A9750A"
+                    android:centerColor="#FFDF8A"
+                    android:endColor="#C68C14" />
+            </aapt:attr>
+        </path>
+
+        <!-- Faceted collar where the casting meets the handle. -->
+        <path
+            android:pathData="M47.5,63 L60.5,63 L59.4,68 L48.6,68 Z"
+            android:fillColor="#B8860B" />
+
+        <!-- Handle: slight taper, rounded foot. -->
+        <path android:pathData="M48.6,68
+                L59.4,68
+                L58.6,83
+                C58.6,85 57.2,86 55,86
+                L53,86
+                C50.8,86 49.4,85 49.4,83 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:type="linear"
+                    android:startX="48.6" android:startY="0"
+                    android:endX="59.4" android:endY="0"
+                    android:startColor="#6E5138"
+                    android:centerColor="#9C7654"
+                    android:endColor="#74573C" />
+            </aapt:attr>
+        </path>
+    </group>
+
+    <!-- Bluetooth badge, upper right. Outside the rotated group so it stays
+         upright regardless of the bell's tilt. Dark slate disc rather than the
+         usual Bluetooth blue, to stay within the champagne/gold/slate palette. -->
+    <path
+        android:pathData="M64.5,35 A8.5,8.5 0 1 0 81.5,35 A8.5,8.5 0 1 0 64.5,35 Z"
+        android:fillColor="#37414D" />
+
+    <!-- Standard Bluetooth glyph, authored in its native 24x24 box and placed by
+         the group transform: scaled to ~11 units and centred on the disc at
+         (73,35). evenOdd fill so the two inner triangles cut as holes. -->
+    <group
+        android:name="bluetooth"
+        android:translateX="67.5"
+        android:translateY="29.5"
+        android:scaleX="0.458"
+        android:scaleY="0.458">
+        <path
+            android:fillColor="#FFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M17.71,7.71 L12,2 h-1 v7.59 L6.41,5 L5,6.41 L10.59,12 L5,17.59 L6.41,19 L11,14.41 V22 h1 l5.71,-5.71 l-4.3,-4.29 l4.3,-4.29 z M13,5.83 l1.88,1.88 L13,9.59 V5.83 z M14.88,16.29 L13,18.17 v-3.76 l1.88,1.88 z" />
+    </group>
+</vector>
