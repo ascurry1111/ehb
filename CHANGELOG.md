@@ -1,8 +1,21 @@
 # Changelog
 
-## Unreleased (v0.2 in progress)
+## v0.2 — 2026-09-01
 
 Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
+Confirmed working on hardware end to end, at ~22ms average ring-to-sound.
+
+Known items deliberately left for v0.3, all documented in the relevant
+README rather than only here:
+- Dynamic level varies noticeably between rings that feel identical by hand
+  (root cause not yet identified — see the tuning-TODO list in
+  `firmware/README.md`).
+- Ring/damp thresholds are reasoned starting points refined by feel, not
+  measured against trace data across a range of ringers.
+- Karplus-Strong tuning drifts at the very top of the pitch range
+  (integer-sample delay length; fixable with fractional-delay interpolation).
+- Raising the accelerometer ODR would cut a few ms of latency but requires
+  re-deriving three sample-count-based tuning constants first.
 
 - `feather_transmitter.ino`: dropped ESP-NOW/WiFi entirely (Android has no
   ESP-NOW support; also removes WiFi/BLE coexistence jitter). Raised LIS3DH
