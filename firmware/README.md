@@ -114,6 +114,17 @@ the thresholds sit in the right place.
   shoulder, so the damp threshold is set much lower. **Lower** whichever
   gesture is being missed entirely (nothing prints at all); **raise** it if
   incidental handling triggers that gesture.
+- **`DAMP_CONTACT_JERK`** (m/s³) — how *suddenly* the deceleration must arrive
+  for a damp to count as a contact. This exists because the damp threshold
+  alone can't do the job: as you slow your arm approaching your shoulder, that
+  voluntary slowdown produces a deceleration of similar *magnitude* to a gentle
+  contact, so lowering the threshold enough to catch soft damps also makes it
+  fire mid-approach, before the casting touches anything. Contact is
+  distinguished by suddenness, not force — it changes acceleration within
+  milliseconds where an arm slowdown ramps over 100ms+. **Lower it** if soft
+  damps are missed (watch for `(damp: decel N ok, jerk N too soft)` in the
+  serial log — that's this gate rejecting a gesture, and it names the number to
+  beat); **raise it** if damps fire before the bell touches you.
 - **`ARM_SPEED`** (m/s) — how fast the bell must move for the detector to
   start watching at all. Keep it comfortably below `RING_FORWARD_VELOCITY` so
   every real gesture gets watched early enough for its peaks to be captured,

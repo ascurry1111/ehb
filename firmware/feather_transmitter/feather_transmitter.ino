@@ -306,7 +306,32 @@
 // RAISE either if incidental handling triggers that gesture; LOWER it if you
 // have to make the motion unnaturally hard to trigger.
 #define RING_STOP_DECEL_THRESHOLD  12.0f
-#define DAMP_STOP_DECEL_THRESHOLD   6.0f
+#define DAMP_STOP_DECEL_THRESHOLD   5.0f
+
+// CONTACT vs APPROACH — why the damp threshold above can't do the job alone.
+//
+// Dropping DAMP_STOP_DECEL_THRESHOLD far enough to catch a soft damp also
+// catches the smooth slowdown of the arm approaching the shoulder: both
+// produce decelerations of similar MAGNITUDE, so no threshold separates them.
+// Too high and gentle damps are missed; too low and it fires mid-approach,
+// before the casting touches anything.
+//
+// What actually separates them is SUDDENNESS. A physical contact changes
+// acceleration within a few milliseconds; a voluntary arm slowdown ramps over
+// a tenth of a second or more — roughly an order of magnitude apart in JERK
+// (rate of change of acceleration). So a damp requires both: enough
+// deceleration AND a jerk spike that says "this was a collision, not a
+// deliberate slowdown."
+//
+// Ring deliberately keeps a magnitude-only test. Its threshold is already far
+// above any voluntary arm deceleration, and it's working — no reason to add a
+// condition that could break it.
+//
+// TUNING: watch jerk= in the CALIBRATION_MODE 2 trace and on each DAMP line.
+// A rejected-but-close gesture logs "(damp: decel ok, jerk N too soft)", which
+// tells you directly to LOWER this. RAISE it if damps still fire mid-approach.
+#define JERK_WINDOW_SAMPLES        5       // 12.5ms at 400Hz — wide enough to beat ADC noise
+#define DAMP_CONTACT_JERK          150.0f  // m/s^3
 
 // Speed must fall back below this (m/s) for a gesture that never produced a
 // definite stop to release and start over.
@@ -415,12 +440,22 @@ float peakSpeed = 0;              // peak |velocity|, any direction
 float peakForwardVelocity = 0;    // peak SIGNED forward velocity — the ring/damp discriminator
 int restSamples = 0;
 
+// Short history of decelAlongTravel, differenced to get jerk — the
+// contact-vs-approach discriminator for damps. See CONTACT vs APPROACH above.
+float decelHistory[JERK_WINDOW_SAMPLES] = {0};
+int decelHistoryIdx = 0;
+int jerkSamples = 0;              // history entries written since the last reset
+
 // Clear everything gesture-scoped. Called between gestures, so each one is
-// classified purely on its own peaks.
+// classified purely on its own data.
 void resetGesturePeaks() {
   peakLinearAccel = 0;
   peakSpeed = 0;
   peakForwardVelocity = 0;
+  // Invalidate the jerk history rather than zeroing it: a zeroed buffer
+  // differenced against a real deceleration would read as a huge phantom
+  // jerk and fire a damp instantly.
+  jerkSamples = 0;
 }
 
 // Wire-format packet sent as the BLE notify payload.
@@ -687,15 +722,16 @@ void emitRing(unsigned long nowMs) {
 // ---------------------------------------------------------------------------
 // DAMP EMISSION — see SUSTAIN AND DAMP in the header comment
 // ---------------------------------------------------------------------------
-void emitDamp(unsigned long nowMs, float decelAlongTravel) {
+void emitDamp(unsigned long nowMs, float decelAlongTravel, float decelJerk) {
   DampEvent evt;
   evt.timestampMs = nowMs;
 
   // peakFwd is printed because it's what ruled this a damp rather than a ring:
   // if it's sitting just under RING_FORWARD_VELOCITY on gestures you meant as
-  // rings, that threshold is set too high.
-  Serial.printf("DAMP  peakFwd=%.2fm/s  peakSpd=%.2fm/s  decel=%.1fm/s^2  dir=[%.2f %.2f %.2f]\n",
-                peakForwardVelocity, peakSpeed, decelAlongTravel,
+  // rings, that threshold is set too high. decel/jerk are the two gates a damp
+  // has to clear — compare them against the softest damp you want caught.
+  Serial.printf("DAMP  peakFwd=%.2fm/s  peakSpd=%.2fm/s  decel=%.1f  jerk=%.0f  dir=[%.2f %.2f %.2f]\n",
+                peakForwardVelocity, peakSpeed, decelAlongTravel, decelJerk,
                 travelDirX, travelDirY, travelDirZ);
 
   if (bleClientConnected && dampCharacteristic) {
@@ -785,6 +821,19 @@ void loop() {
   }
   float decelAlongTravel = -(linX * travelDirX + linY * travelDirY + linZ * travelDirZ);
 
+  // Jerk: how fast that deceleration is CHANGING. Contact spikes it; a
+  // voluntary arm slowdown doesn't. Differenced across a short window rather
+  // than sample-to-sample, so ADC noise doesn't swamp it.
+  float oldestDecel = decelHistory[decelHistoryIdx];
+  decelHistory[decelHistoryIdx] = decelAlongTravel;
+  decelHistoryIdx = (decelHistoryIdx + 1) % JERK_WINDOW_SAMPLES;
+  if (jerkSamples < JERK_WINDOW_SAMPLES) jerkSamples++;
+  // Until the window has refilled since the last reset, report 0 rather than
+  // a difference against stale data.
+  float decelJerk = (jerkSamples >= JERK_WINDOW_SAMPLES)
+                        ? (decelAlongTravel - oldestDecel) / (JERK_WINDOW_SAMPLES * dt)
+                        : 0.0f;
+
   if (linMag > peakLinearAccel) peakLinearAccel = linMag;
   if (forwardVelocity > peakForwardVelocity) peakForwardVelocity = forwardVelocity;
 
@@ -807,8 +856,8 @@ void loop() {
       // peakFwd is the discriminator: at the stop, >= RING_FORWARD_VELOCITY
       // is a ring, anything less is a damp. Watch it across both gestures to
       // confirm they separate cleanly.
-      Serial.printf("vFwd=%6.2f  speed=%5.2f  decel=%6.1f  peakFwd=%5.2f  peakSpd=%5.2f  state=%s\n",
-                    forwardVelocity, speed, decelAlongTravel,
+      Serial.printf("vFwd=%6.2f  speed=%5.2f  decel=%6.1f  jerk=%7.0f  peakFwd=%5.2f  peakSpd=%5.2f  state=%s\n",
+                    forwardVelocity, speed, decelAlongTravel, decelJerk,
                     peakForwardVelocity, peakSpeed,
                     ringState == RING_IDLE    ? "idle"
                     : ringState == RING_ARMED ? "ARMED"
@@ -835,15 +884,32 @@ void loop() {
       bool wouldRing = (peakForwardVelocity >= RING_FORWARD_VELOCITY);
       float stopThreshold = wouldRing ? RING_STOP_DECEL_THRESHOLD
                                       : DAMP_STOP_DECEL_THRESHOLD;
+      bool stopped = (decelAlongTravel >= stopThreshold);
 
-      if (decelAlongTravel >= stopThreshold) {
+      // A damp must additionally look like a CONTACT rather than the smooth
+      // slowdown of the arm approaching — see CONTACT vs APPROACH in the
+      // config. Ring keeps a magnitude-only test.
+      if (stopped && !wouldRing && decelJerk < DAMP_CONTACT_JERK) {
+        stopped = false;
+        // Rate-limited so a long approach doesn't flood the log. This line
+        // firing on gestures you meant as damps means DAMP_CONTACT_JERK is
+        // set too high.
+        static unsigned long lastSoftLogMs = 0;
+        if (nowMs - lastSoftLogMs >= 300) {
+          lastSoftLogMs = nowMs;
+          Serial.printf("(damp: decel %.1f ok, jerk %.0f too soft)\n",
+                        decelAlongTravel, decelJerk);
+        }
+      }
+
+      if (stopped) {
         if (wouldRing) {
           // Travelled forward with real commitment: this is a strike.
           emitRing(nowMs);
           lastRingMs = nowMs;
         } else if (nowMs - lastRingMs >= POST_RING_DAMP_LOCKOUT_MS) {
           // Moved and stopped, but not a forward swing: a damp.
-          emitDamp(nowMs, decelAlongTravel);
+          emitDamp(nowMs, decelAlongTravel, decelJerk);
         } else {
           // Within the post-ring lockout. This is almost certainly the
           // strike's own recoil, not a real damp — swallow it rather than

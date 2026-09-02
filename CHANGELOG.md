@@ -88,6 +88,16 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   Also added `POST_RING_DAMP_LOCKOUT_MS`, needed by the new design: the
   strike's recoil is real motion ending in a real deceleration, and would
   otherwise read as a damp and kill the tone it just started.
+- Damps now fire on *contact* rather than on deceleration magnitude alone.
+  Lowering `DAMP_STOP_DECEL_THRESHOLD` far enough to catch gentle damps also
+  caught the arm's own slowdown while approaching the shoulder — the two are
+  similar in magnitude, so no threshold separates them. What does separate
+  them is suddenness: contact changes acceleration within milliseconds, an
+  arm slowdown ramps over 100ms+. A damp now additionally requires a jerk
+  spike (`DAMP_CONTACT_JERK`), which lets the deceleration threshold stay low
+  enough for soft damps without firing mid-approach. Ring keeps a
+  magnitude-only test — its threshold is already well above any voluntary arm
+  motion.
 - Soft damps now register. A damp can be a far gentler motion than a ring —
   resting the casting against a shoulder rather than arresting a committed
   swing — so it gets its own, much lower stop threshold
