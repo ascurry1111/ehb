@@ -238,22 +238,39 @@ class MainActivity : AppCompatActivity() {
             onStatus = { status -> runOnUiThread { tvStatus.text = status } },
             onBattery = { status -> runOnUiThread { onBattery(status) } },
             onRing = { event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs ->
-                runOnUiThread { onRing(event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs) }
+                // LATENCY-CRITICAL: play on THIS thread (the BLE callback thread),
+                // before hopping to the main thread. RingPlayer.play() is cheap and
+                // thread-safe by design; going through runOnUiThread first meant the
+                // sound waited on the main looper -- behind whatever frame or layout
+                // pass happened to be in progress -- and then behind this activity's
+                // own UI updates. Both are now strictly after the sound starts.
+                ringPlayer.play(event.peakG)
+                val playedAtElapsedMs = SystemClock.elapsedRealtime()
+                runOnUiThread {
+                    onRingUi(event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs, playedAtElapsedMs)
+                }
             },
-            onDamp = { runOnUiThread { ringPlayer.damp() } },
+            // Same reasoning, though damp is far less timing-sensitive than a ring.
+            onDamp = { ringPlayer.damp() },
         ).also { it.start() }
     }
 
-    private fun onRing(event: RingEvent, receivedAtElapsedMs: Long, estimatedDetectionAtElapsedMs: Long?) {
+    /** UI-only half of handling a ring. The sound has ALREADY been started by the time
+     *  this runs -- see the onRing lambda in startBleClient(). Nothing in here is on the
+     *  latency path, so it's free to do string formatting and view updates.
+     *  playedAtElapsedMs is passed in rather than measured here, since it has to be
+     *  captured at the actual play() call to mean anything. */
+    private fun onRingUi(
+        event: RingEvent,
+        receivedAtElapsedMs: Long,
+        estimatedDetectionAtElapsedMs: Long?,
+        playedAtElapsedMs: Long,
+    ) {
         ringCount++
         val dynamicLevel = DynamicLevel.forPeakG(event.peakG)
         tvRingCount.text = ringCount.toString()
         tvLastPeak.text = String.format(Locale.US, "Last peak: %.2fg (%s)", event.peakG, dynamicLevel.label)
         flashBackground()
-
-        // Play immediately — this is the latency-critical path, no extra work before it.
-        ringPlayer.play(event.peakG)
-        val playedAtElapsedMs = SystemClock.elapsedRealtime()
 
         val record = if (estimatedDetectionAtElapsedMs == null) {
             RingRecord(event.ringId, event.peakG, dynamicLevel, null, null, null)

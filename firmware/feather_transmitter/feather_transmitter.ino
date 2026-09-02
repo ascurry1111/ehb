@@ -628,6 +628,15 @@ void setup() {
     Serial.println("Could not find LIS3DH — check wiring/address!");
     while (1) delay(1000);
   }
+
+  // Arduino's Wire defaults to 100kHz, and the LIS3DH supports 400kHz fast
+  // mode. Every sample read is ~7 bytes on the bus, so this cuts roughly
+  // 0.6ms of blocking I2C time per read down to ~0.15ms -- and that time sits
+  // directly in the ring-to-sound path, since detection can't run until the
+  // read completes. Set AFTER lis.begin(): Adafruit_I2CDevice::begin() calls
+  // Wire.begin() without touching the clock, so this sticks.
+  Wire.setClock(400000);
+
   lis.setRange(LIS3DH_RANGE_4_G);
   // 12-bit high resolution at 400Hz. The detector integrates acceleration into
   // velocity, so resolution matters more here than raw sample rate — see the
@@ -709,14 +718,19 @@ void emitRing(unsigned long nowMs) {
   evt.peakMilliG = (uint16_t)constrain(peakMilliG, 0.0f, 65535.0f);
   evt.timestampMs = nowMs;
 
-  Serial.printf("RING #%lu  peak=%.2fg  peakFwd=%.2fm/s  peakSpd=%.2fm/s\n",
-                (unsigned long)evt.ringId, evt.peakMilliG / 1000.0f,
-                peakForwardVelocity, peakSpeed);
-
+  // NOTIFY FIRST, log second. Everything below this point is diagnostics, and
+  // the Serial.printf is NOT cheap: three %f conversions through newlib's
+  // float formatter, plus a ~60-char write at 115200 baud. Doing it before the
+  // notify put all of that squarely in the ring-to-sound latency path for no
+  // reason. evt is fully populated above, so this is a pure reordering.
   if (bleClientConnected && ringCharacteristic) {
     ringCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
     ringCharacteristic->notify();
   }
+
+  Serial.printf("RING #%lu  peak=%.2fg  peakFwd=%.2fm/s  peakSpd=%.2fm/s\n",
+                (unsigned long)evt.ringId, evt.peakMilliG / 1000.0f,
+                peakForwardVelocity, peakSpeed);
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +740,14 @@ void emitDamp(unsigned long nowMs, float decelAlongTravel, float decelJerk) {
   DampEvent evt;
   evt.timestampMs = nowMs;
 
+  // Notify first, log second -- same reasoning as emitRing above. Damp timing
+  // is far less perceptually critical than a ring, but there's no reason to
+  // pay the float-formatting cost before sending either.
+  if (bleClientConnected && dampCharacteristic) {
+    dampCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
+    dampCharacteristic->notify();
+  }
+
   // peakFwd is printed because it's what ruled this a damp rather than a ring:
   // if it's sitting just under RING_FORWARD_VELOCITY on gestures you meant as
   // rings, that threshold is set too high. decel/jerk are the two gates a damp
@@ -733,11 +755,6 @@ void emitDamp(unsigned long nowMs, float decelAlongTravel, float decelJerk) {
   Serial.printf("DAMP  peakFwd=%.2fm/s  peakSpd=%.2fm/s  decel=%.1f  jerk=%.0f  dir=[%.2f %.2f %.2f]\n",
                 peakForwardVelocity, peakSpeed, decelAlongTravel, decelJerk,
                 travelDirX, travelDirY, travelDirZ);
-
-  if (bleClientConnected && dampCharacteristic) {
-    dampCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
-    dampCharacteristic->notify();
-  }
 }
 
 // ---------------------------------------------------------------------------

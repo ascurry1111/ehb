@@ -103,6 +103,38 @@ than the number shown, by whatever that device's audio path adds.
 Until the first sync completes (a few hundred ms after connecting), latency
 reads "syncing clock…" rather than a wrong number.
 
+### Where the remaining latency goes
+
+Roughly, for a measured total in the low 20s of ms:
+
+| Stage | Approx. | Controllable? |
+|---|---|---|
+| Sensor ODR + firmware polling (400Hz, both 2.5ms) | ~2–5ms | Only by raising ODR — see below |
+| I2C read of the sample | ~0.15ms | Already at 400kHz fast mode |
+| Detection + BLE notify queued | <0.5ms | Already minimal |
+| **BLE connection interval wait** | **~5–11ms** | **No — this is the floor** |
+| Android BLE stack → app callback | ~1–3ms | No |
+| App callback → `SoundPool.play()` | <1ms | Already minimal |
+| `play()` → actually audible | not measured | See the caveat above |
+
+**The connection interval dominates and can't be pushed much further.** BLE's
+spec minimum is 7.5ms, the firmware already requests it, and the app already
+requests `CONNECTION_PRIORITY_HIGH` — but the *central* (the phone) decides,
+and Android typically settles around 11.25ms regardless. A notification waits
+on average half an interval, so ~5–6ms of the total is simply the radio, with
+no public Android API to go lower.
+
+**Raising the accelerometer ODR is the one remaining lever, and it is not
+free.** The LIS3DH can run at 1.344kHz in high-resolution mode, which would
+save a couple of ms. But three tuned constants are expressed in *samples*, not
+time, and would all silently change meaning:
+`REST_SAMPLES_REQUIRED` (40 = 100ms at 400Hz, would become 30ms),
+`JERK_WINDOW_SAMPLES` (5 = 12.5ms, would become 3.7ms — directly changes the
+damp contact test), and `GRAVITY_LPF_ALPHA` (0.997 ≈ a 1s time constant at
+400Hz, would become ~0.3s). Changing ODR without re-deriving all three would
+quietly break gesture detection. Worth doing deliberately, with the
+`CALIBRATION_MODE 2` trace and time to retune — not as a latency tweak.
+
 ## About the battery reading
 
 The Feather V2 has no fuel-gauge chip, so percentage/charging/no-battery are

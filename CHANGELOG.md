@@ -168,6 +168,31 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   than risking a permanently grey-locked UI, given the new stakes of
   leaving it stuck.
 
+- Latency reduction pass, targeting the measured ~30ms ring-to-sound time.
+  Three fixes, all on the path itself:
+  - **App: play the tone on the BLE callback thread**, before hopping to the
+    main thread. `onRing` previously went through `runOnUiThread` and then did
+    a `String.format` and three view updates *before* calling `play()` — despite
+    a comment claiming it played first with "no extra work before it." The
+    sound was waiting on the main looper (behind any in-progress frame) and
+    then on the app's own UI work. Split into `onRingUi` for everything
+    non-urgent; likely the largest single win.
+  - **Firmware: notify before logging.** `emitRing()` ran a `Serial.printf`
+    with three `%f` conversions *before* `notify()`, putting float formatting
+    and a 115200-baud write directly in the latency path. Pure reordering.
+  - **Firmware: I2C at 400kHz** (`Wire.setClock`) instead of Arduino's 100kHz
+    default. Cuts ~0.6ms of blocking bus time per sample read down to ~0.15ms,
+    and that time is on the path since detection can't run until the read
+    finishes.
+  Also added `audioLock` in `RingPlayer` to serialize `play()`/`damp()` and the
+  damp fade steps — they used to get that for free by both running on the main
+  thread, so it's required now that `play()` comes in off-thread.
+  Documented the full remaining latency budget in the Android README,
+  including why the BLE connection interval (~5–11ms) is a hard floor and why
+  raising the accelerometer ODR is *not* a safe latency tweak (three tuned
+  constants are expressed in samples, not time, and would silently change
+  meaning).
+
 ## v0.1 — 2026-08-29
 
 Initial prototype.

@@ -161,6 +161,10 @@ class RingPlayer(private val context: Context) {
 
     private val fadeHandler = Handler(Looper.getMainLooper())
 
+    // Serializes play()/damp() and the damp fade steps against each other. See the
+    // note on play() for why this is needed now that play() runs off the main thread.
+    private val audioLock = Any()
+
     @Volatile private var soundIdByLevel: Map<DynamicLevel, Int> = emptyMap()
     @Volatile private var ready = false
 
@@ -308,8 +312,19 @@ class RingPlayer(private val context: Context) {
         }
     }
 
-    /** Trigger playback for a ring with the given peak acceleration (in g). Cheap — safe to
-     *  call directly from the BLE notification callback. */
+    /** Trigger playback for a ring with the given peak acceleration (in g).
+     *
+     *  Deliberately safe to call from ANY thread, and MainActivity calls it straight
+     *  from the BLE notification callback rather than hopping to the main thread
+     *  first -- that hop, plus the UI work that used to run ahead of it, was a
+     *  meaningful chunk of ring-to-sound latency. Everything here is cheap and
+     *  non-blocking: a map lookup and two SoundPool calls.
+     *
+     *  play() and damp() are serialized against each other by audioLock. They used
+     *  to get that for free by both running on the main thread; now that play()
+     *  comes in off-thread, the lock is what keeps a damp's fade from stomping on a
+     *  stream a concurrent play() just started (or vice versa). Uncontended, it
+     *  costs tens of nanoseconds -- nothing next to the milliseconds this saves. */
     fun play(peakG: Float) {
         if (!ready) {
             Log.w(TAG, "play() called before tones finished loading — dropping.")
@@ -319,40 +334,50 @@ class RingPlayer(private val context: Context) {
             Log.i(TAG, "play() called during an instrument change — dropping to avoid the wrong voice.")
             return
         }
-        // A new strike replaces the currently sounding tone -- see the
-        // monophonic note on activeStreamId above. Stop unconditionally
-        // (no fade): the new tone's own attack transient masks any click,
-        // and this is the ring-event hot path, so keep it to one cheap call.
-        activeStreamId?.let { soundPool.stop(it) }
-        fadeHandler.removeCallbacksAndMessages(null) // cancel any in-flight damp fade
-
         val level = DynamicLevel.forPeakG(peakG)
         val soundId = soundIdByLevel[level] ?: return
-        activeStreamId = soundPool.play(soundId, level.volume, level.volume, /* priority = */ 1, /* loop = */ 0, playbackRate)
-        activeVolume = level.volume
+
+        synchronized(audioLock) {
+            // A new strike replaces the currently sounding tone -- see the
+            // monophonic note on activeStreamId above. Stop unconditionally
+            // (no fade): the new tone's own attack transient masks any click,
+            // and this is the ring-event hot path, so keep it to one cheap call.
+            activeStreamId?.let { soundPool.stop(it) }
+            fadeHandler.removeCallbacksAndMessages(null) // cancel any in-flight damp fade
+            activeStreamId = soundPool.play(soundId, level.volume, level.volume, /* priority = */ 1, /* loop = */ 0, playbackRate)
+            activeVolume = level.volume
+        }
     }
 
     /** Stop whatever's currently ringing, quickly but without a click -- the software
      *  equivalent of touching the casting. Driven by the firmware's damp gesture or
-     *  the app's manual Damp button. Safe to call when nothing is playing (no-op). */
+     *  the app's manual Damp button. Safe to call when nothing is playing (no-op),
+     *  and from any thread (see the audioLock note on play()). */
     fun damp() {
-        // Deliberately leaves activeStreamId set until the fade actually finishes
-        // (rather than nulling it here) -- so if play() is called again mid-fade,
-        // it still finds this stream and hard-stops it, instead of the pending
-        // fade steps below getting cancelled and leaking a stuck, quiet-but-not-
-        // silent stream.
-        val streamId = activeStreamId ?: return
-        val startVolume = activeVolume
-        fadeHandler.removeCallbacksAndMessages(null)
-        for (step in 1..DAMP_FADE_STEPS) {
-            fadeHandler.postDelayed({
-                val v = startVolume * (1f - step.toFloat() / DAMP_FADE_STEPS)
-                soundPool.setVolume(streamId, v, v)
-                if (step == DAMP_FADE_STEPS) {
-                    soundPool.stop(streamId)
-                    if (activeStreamId == streamId) activeStreamId = null
-                }
-            }, step * DAMP_FADE_STEP_MS)
+        synchronized(audioLock) {
+            // Deliberately leaves activeStreamId set until the fade actually finishes
+            // (rather than nulling it here) -- so if play() is called again mid-fade,
+            // it still finds this stream and hard-stops it, instead of the pending
+            // fade steps below getting cancelled and leaking a stuck, quiet-but-not-
+            // silent stream.
+            val streamId = activeStreamId ?: return
+            val startVolume = activeVolume
+            fadeHandler.removeCallbacksAndMessages(null)
+            for (step in 1..DAMP_FADE_STEPS) {
+                fadeHandler.postDelayed({
+                    // Also under the lock: a play() landing between fade steps must not
+                    // interleave with them, or a step could mute the stream play() just
+                    // started (SoundPool can reuse a retired stream id).
+                    synchronized(audioLock) {
+                        val v = startVolume * (1f - step.toFloat() / DAMP_FADE_STEPS)
+                        soundPool.setVolume(streamId, v, v)
+                        if (step == DAMP_FADE_STEPS) {
+                            soundPool.stop(streamId)
+                            if (activeStreamId == streamId) activeStreamId = null
+                        }
+                    }
+                }, step * DAMP_FADE_STEP_MS)
+            }
         }
     }
 
