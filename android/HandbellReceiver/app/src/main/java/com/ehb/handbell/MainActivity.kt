@@ -27,6 +27,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvClearLog: TextView
     private lateinit var btnDamp: Button
     private lateinit var spinnerPitch: Spinner
+    private lateinit var btnPitchDown: Button
+    private lateinit var btnPitchUp: Button
     private lateinit var lvRingLog: ListView
     private lateinit var rootView: android.view.View
 
@@ -51,6 +53,14 @@ class MainActivity : AppCompatActivity() {
 
     // Tap tvLatency to flip this -- deliberately no visible toggle control.
     private var showLatencyDetails = false
+
+    // Set true right before a +/- nudge programmatically moves the spinner's
+    // selection, and cleared by the listener itself (not by the code that set it)
+    // when it actually fires -- Spinner.setSelection()'s onItemSelected callback
+    // is documented inconsistently across Android versions as either synchronous
+    // or posted, so this has to survive either timing rather than being reset
+    // immediately after the setSelection() call returns.
+    private var suppressNextSpinnerCallback = false
 
     private companion object {
         const val MAX_LOG_ENTRIES = 200
@@ -85,6 +95,8 @@ class MainActivity : AppCompatActivity() {
         tvClearLog = findViewById(R.id.tvClearLog)
         btnDamp = findViewById(R.id.btnDamp)
         spinnerPitch = findViewById(R.id.spinnerPitch)
+        btnPitchDown = findViewById(R.id.btnPitchDown)
+        btnPitchUp = findViewById(R.id.btnPitchUp)
         lvRingLog = findViewById(R.id.lvRingLog)
 
         ringLogAdapter = ArrayAdapter(this, R.layout.item_ring_log, R.id.tvRingLogItem, mutableListOf<String>())
@@ -113,6 +125,9 @@ class MainActivity : AppCompatActivity() {
         ringPlayer.prepare(savedPitch)
         setUpPitchSpinner(savedPitch)
 
+        btnPitchDown.setOnClickListener { nudgePitch(-1) }
+        btnPitchUp.setOnClickListener { nudgePitch(+1) }
+
         requestPermissions.launch(
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         )
@@ -131,15 +146,43 @@ class MainActivity : AppCompatActivity() {
         spinnerPitch.post {
             spinnerPitch.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    // A +/- nudge moved the selection programmatically; it already
+                    // updated RingPlayer and preferences itself via the fast path,
+                    // so skip the slow one here. Consumed (reset) here rather than
+                    // by the caller -- see the field doc for why.
+                    if (suppressNextSpinnerCallback) {
+                        suppressNextSpinnerCallback = false
+                        return
+                    }
+
                     val pitch = HandbellPitches.ALL[position]
                     ringPlayer.setPitch(pitch)
-                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                        .putString(KEY_PITCH_NAME, pitch.name)
-                        .apply()
+                    savePitchPreference(pitch)
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
         }
+    }
+
+    /** +/- buttons: instant, via RingPlayer's playback-rate nudge -- see its class doc.
+     *  Keeps the spinner's displayed selection in sync without re-triggering a
+     *  full (slow) re-synthesis through its own listener. */
+    private fun nudgePitch(direction: Int) {
+        val newPitch = ringPlayer.nudgeSemitone(direction) ?: return // already at range limit
+        suppressNextSpinnerCallback = true
+        spinnerPitch.setSelection(HandbellPitches.ALL.indexOf(newPitch))
+        savePitchPreference(newPitch)
+        // Safety net: if onItemSelected never fires for this change (some Android
+        // versions skip it in cases that are hard to enumerate exhaustively), don't
+        // leave the flag stuck true forever -- that would silently swallow the next
+        // real user tap on the spinner.
+        spinnerPitch.postDelayed({ suppressNextSpinnerCallback = false }, 500)
+    }
+
+    private fun savePitchPreference(pitch: HandbellPitch) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(KEY_PITCH_NAME, pitch.name)
+            .apply()
     }
 
     @SuppressLint("MissingPermission")

@@ -120,6 +120,20 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   at the new frequency on a background thread; the previous pitch's tones
   stay playable until the new ones are ready (generation-counter guarded
   against rapid changes racing each other), so a ring mid-change never drops.
+- Instant +/- half-step nudge buttons flanking the pitch dropdown. These
+  don't re-synthesize (the dropdown's ~1s re-synthesis was too slow for a
+  one-button nudge) — a semitone is a SoundPool playback-rate change of
+  2^(1/12), so a nudge just replays the already-loaded tones at a shifted
+  rate. `RingPlayer` lets that drift up to 9 semitones (safely inside
+  SoundPool's 0.5–2.0 rate range) before quietly re-synthesizing in the
+  background to rebase, invisibly to the caller.
+- Fixed harmonic aliasing at high pitches. `synthesizeBellTone()`'s upper
+  harmonics (2.4x/4.1x the fundamental) were inaudibly above Nyquist at the
+  original fixed A5 tuning, but pitch selection's range now reaches C8
+  (4186Hz), where the same harmonics land at ~10–17kHz — above this app's
+  22050Hz sample rate's Nyquist, where they'd fold back down as audible
+  noise rather than simply disappear. Each harmonic now fades out as it
+  approaches Nyquist instead.
 
 ## v0.1 — 2026-08-29
 

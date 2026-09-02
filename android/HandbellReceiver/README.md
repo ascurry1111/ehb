@@ -167,21 +167,41 @@ To retune:
 
 ## Pitch selection
 
-The **Pitch** dropdown near the top of the screen picks which note the bell
-tone is synthesized at, from the standard chromatic range of a 5-octave
-handbell choir set — C3 to C8, 61 pitches, spelled with flats (`Bb4`, not
-`A#4`) per handbell convention. See
+Pitch controls sit near the top of the screen: a **Pitch** dropdown for
+jumping straight to a specific note, and **-** / **+** buttons on either side
+of it for nudging a half step at a time. Both cover the standard chromatic
+range of a 5-octave handbell choir set — C3 to C8, 61 pitches, spelled with
+flats (`Bb4`, not `A#4`) per handbell convention. See
 [`HandbellPitch.kt`](app/src/main/java/com/ehb/handbell/HandbellPitch.kt) for
 the full list and the equal-temperament frequency math (A4 = 440Hz). Defaults
 to `A5` (880Hz) — what the tone was originally tuned to — and remembers your
 last choice across restarts (`SharedPreferences`, not tied to any particular
 bell).
 
-Changing pitch re-synthesizes all six dynamic-level tones at the new
-frequency on a background thread (~1s). The previous pitch's tones stay
-playable until the new ones are ready, so **a ring mid-change never drops
-silently** — worst case it plays once more at the old pitch, then the next
-one is at the new pitch. Rapid changes are also safe: `RingPlayer` tracks a
-generation counter and only the last selection's synthesis result gets
-applied, so flicking through several pitches quickly can't leave a stale one
-half-applied.
+**These two controls take different paths, and it matters for responsiveness:**
+
+- The **dropdown** re-synthesizes all six dynamic-level tones at the new
+  frequency on a background thread (~1s). The previous pitch's tones stay
+  playable until the new ones are ready, so a ring mid-change never drops
+  silently — worst case it plays once more at the old pitch. Rapid dropdown
+  changes are also safe: `RingPlayer` tracks a generation counter and only
+  the last selection's synthesis result gets applied.
+- The **-/+ buttons** are instant. They don't re-synthesize at all — a
+  semitone is a SoundPool playback-rate change of 2^(1/12), trivially inside
+  its documented 0.5–2.0 range, so nudging just plays the already-loaded
+  tones slightly faster or slower. `RingPlayer` lets this drift up to 9
+  semitones before quietly re-synthesizing in the background to "rebase" and
+  reset the rate to 1.0 (rate-shifting a fixed sample is only an
+  approximation of a true pitch change; small shifts are convincing, but it
+  gets audibly "sped up" well before a full octave). The dropdown's displayed
+  selection stays in sync with nudges without re-triggering its own
+  (slow) resynthesis path — see `nudgePitch()` in `MainActivity.kt` for how
+  that's guarded.
+
+One correctness note from extending the pitch range up to C8: the tone's
+upper harmonics (`synthesizeBellTone()`'s 2.4x/4.1x multipliers) would alias
+above this app's 22050Hz sample rate at the top of that range — a harmonic
+above Nyquist doesn't just disappear, it folds back down as audible noise.
+Each harmonic is now faded out as it approaches Nyquist rather than left to
+alias; inaudible at the original fixed A5 tuning, but real once pitch went
+up to C8.
