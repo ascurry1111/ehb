@@ -23,8 +23,9 @@
          VELOCITY, using a leaky integrator so sensor bias can't drift it.
       3. The detector arms once the bell is genuinely moving (ARM_SPEED), not
          just jostled.
-      4. While armed, a sharp deceleration (STOP_DECEL_THRESHOLD) counts as
-         the bell being stopped. That's the moment a real clapper strikes —
+      4. While armed, a sharp deceleration (RING_STOP_DECEL_THRESHOLD, or the
+         gentler DAMP_STOP_DECEL_THRESHOLD if this isn't shaping up to be a
+         ring) counts as the bell being stopped. That's when a clapper strikes —
          and the moment the gesture gets classified: peak forward velocity at
          or above RING_FORWARD_VELOCITY means it was a ring, anything less
          means it was a damp. See DECIDE AT THE STOP below.
@@ -107,6 +108,14 @@
     The one thing this design must guard against is the strike recoil right
     after a ring reading as a damp and killing the tone it just started —
     hence POST_RING_DAMP_LOCKOUT_MS.
+
+    Note "decided at the stop" does NOT mean the two gestures must share a
+    stop threshold. The classification input — peak forward velocity — is a
+    running peak available at every sample, so which gesture a motion would
+    be, and therefore which threshold applies to it, is known continuously.
+    They get separate thresholds precisely because they're physically
+    different events: arresting a committed swing versus resting the casting
+    against your shoulder.
 
   DON'T REQUIRE THE BELL TO STOP BETWEEN GESTURES
     A related early mistake: the post-event settle required speed to fall
@@ -265,10 +274,13 @@
 
 // Speed (m/s, any direction) at which the detector starts watching a gesture.
 // This is NOT what distinguishes a ring from a damp — that's decided at the
-// stop, see RING_FORWARD_VELOCITY below. Keep this comfortably below both, so
+// stop, see RING_FORWARD_VELOCITY below. Keep it comfortably below both, so
 // every real gesture gets watched from early enough to capture its peaks.
+// Set low because a damp can be a genuinely gentle motion — well gentler than
+// any ring — and a gesture that never arms can't be detected no matter how the
+// stop thresholds are set.
 // RAISE if incidental handling triggers things; LOWER if gestures are missed.
-#define ARM_SPEED               0.45f
+#define ARM_SPEED               0.30f
 
 // Peak FORWARD velocity (m/s) a gesture must have reached, at the moment it
 // stops, to count as a ring rather than a damp. This is the ring/damp
@@ -281,13 +293,20 @@
 #define RING_FORWARD_VELOCITY   0.70f
 
 // Deceleration (m/s^2) along the direction of travel that counts as "the bell
-// stopped". One threshold for both gestures now: the stop has to be detected
-// before the gesture can be classified, so it can't depend on which gesture it
-// turns out to be. Set to the more permissive of the two values this replaced
-// (ring used 15, damp 12), since missed gestures were the problem.
-// RAISE if soft/incidental stops trigger; LOWER if you have to stop the bell
-// unnaturally hard.
-#define STOP_DECEL_THRESHOLD    12.0f
+// stopped". Separate values per gesture, because they are physically different
+// events: ringing means arresting a committed swing, while damping can be as
+// gentle as resting the casting against your shoulder.
+//
+// These CAN differ even though the gesture is classified at the stop — the
+// classification input (peakForwardVelocity) is a running peak available at
+// every sample, so which threshold applies is known before the stop happens,
+// not after. An earlier version collapsed these into one on the mistaken
+// reasoning that detection had to precede classification; it doesn't.
+//
+// RAISE either if incidental handling triggers that gesture; LOWER it if you
+// have to make the motion unnaturally hard to trigger.
+#define RING_STOP_DECEL_THRESHOLD  12.0f
+#define DAMP_STOP_DECEL_THRESHOLD   6.0f
 
 // Speed must fall back below this (m/s) for a gesture that never produced a
 // definite stop to release and start over.
@@ -592,7 +611,7 @@ void setup() {
   Serial.println("things that should NOT trigger either (pick up, tap handle, slow");
   Serial.println("tilt). Compare peakFwd across rings vs damps -- they should");
   Serial.println("separate cleanly around RING_FORWARD_VELOCITY -- and decel at");
-  Serial.println("each stop against STOP_DECEL_THRESHOLD.\n");
+  Serial.println("each stop against RING_/DAMP_STOP_DECEL_THRESHOLD.\n");
 #endif
 
   // --- BLE (NimBLE) ---
@@ -809,11 +828,16 @@ void loop() {
       }
       break;
 
-    case RING_ARMED:
-      if (decelAlongTravel >= STOP_DECEL_THRESHOLD) {
-        // The bell stopped. NOW decide what the gesture was, using the peaks
-        // accumulated across the whole motion.
-        if (peakForwardVelocity >= RING_FORWARD_VELOCITY) {
+    case RING_ARMED: {
+      // What this gesture would be if it stopped right now. Depends only on a
+      // running peak, so it's known at every sample — which is what lets the
+      // two gestures use different stop thresholds.
+      bool wouldRing = (peakForwardVelocity >= RING_FORWARD_VELOCITY);
+      float stopThreshold = wouldRing ? RING_STOP_DECEL_THRESHOLD
+                                      : DAMP_STOP_DECEL_THRESHOLD;
+
+      if (decelAlongTravel >= stopThreshold) {
+        if (wouldRing) {
           // Travelled forward with real commitment: this is a strike.
           emitRing(nowMs);
           lastRingMs = nowMs;
@@ -834,6 +858,7 @@ void loop() {
         resetGesturePeaks();
       }
       break;
+    }
 
     case RING_SETTLING:
       // Wait out the refractory window and for the deceleration spike itself
@@ -841,7 +866,9 @@ void loop() {
       // ringing and then damping is one continuous motion, and requiring a
       // full stop in between left the detector sitting here right through the
       // damp. See "DON'T REQUIRE THE BELL TO STOP BETWEEN GESTURES".
-      if (nowMs >= settleUntilMs && decelAlongTravel < STOP_DECEL_THRESHOLD) {
+      // Uses the lower of the two thresholds, so the spike has decayed past
+      // the point where either gesture could immediately re-fire on it.
+      if (nowMs >= settleUntilMs && decelAlongTravel < DAMP_STOP_DECEL_THRESHOLD) {
         ringState = RING_IDLE;
         resetGesturePeaks();
       }

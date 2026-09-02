@@ -107,15 +107,18 @@ the thresholds sit in the right place.
   anything less is a damp. **Lower it** if gestures you meant as rings are
   landing silently (check whether their `DAMP peakFwd=` sits just under this
   value — that's the tell). **Raise it** if damps are ringing the bell.
-- **`STOP_DECEL_THRESHOLD`** (m/s²) — how abruptly the bell must stop for
-  *anything* to fire, measured along the direction of travel. **Lower it** if
-  gestures are being missed entirely (nothing at all prints); **raise it** if
-  incidental handling triggers events. One threshold covers both gestures:
-  the stop has to be detected before the gesture can be classified, so it
-  can't depend on which gesture it turns out to be.
+- **`RING_STOP_DECEL_THRESHOLD`** / **`DAMP_STOP_DECEL_THRESHOLD`** (m/s²) —
+  how abruptly the bell must stop for each gesture to fire, measured along the
+  direction of travel. Separate values because they're physically different
+  events: arresting a committed swing versus resting the casting against your
+  shoulder, so the damp threshold is set much lower. **Lower** whichever
+  gesture is being missed entirely (nothing prints at all); **raise** it if
+  incidental handling triggers that gesture.
 - **`ARM_SPEED`** (m/s) — how fast the bell must move for the detector to
   start watching at all. Keep it comfortably below `RING_FORWARD_VELOCITY` so
-  every real gesture gets watched early enough for its peaks to be captured.
+  every real gesture gets watched early enough for its peaks to be captured,
+  and low enough for a gentle damp — a gesture that never arms can't be
+  detected no matter how low the stop thresholds go.
 - **`POST_RING_DAMP_LOCKOUT_MS`** — suppresses a damp for this long after a
   ring, so the strike's own recoil can't kill the tone it just started. If
   rings sometimes cut themselves off, raise it; if quick ring-then-damp

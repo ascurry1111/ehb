@@ -88,6 +88,15 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   Also added `POST_RING_DAMP_LOCKOUT_MS`, needed by the new design: the
   strike's recoil is real motion ending in a real deceleration, and would
   otherwise read as a damp and kill the tone it just started.
+- Soft damps now register. A damp can be a far gentler motion than a ring —
+  resting the casting against a shoulder rather than arresting a committed
+  swing — so it gets its own, much lower stop threshold
+  (`DAMP_STOP_DECEL_THRESHOLD`, half the ring's), and `ARM_SPEED` was lowered
+  so gentle gestures arm at all. The fix above had merged the two thresholds
+  on the reasoning that the stop must be detected before the gesture can be
+  classified; that was wrong — the classification input is a running peak
+  available at every sample, so the applicable threshold is known
+  continuously.
 - Manual **Damp** button in the app, for stopping a tone by hand. Acts on
   the local audio stream, so it works with or without the bell connected.
 - Raised the dynamic volume floor from 0.08 to 0.20 (now ~14dB pp-to-ff
