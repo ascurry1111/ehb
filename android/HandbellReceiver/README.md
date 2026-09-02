@@ -198,10 +198,59 @@ bell).
   (slow) resynthesis path — see `nudgePitch()` in `MainActivity.kt` for how
   that's guarded.
 
-One correctness note from extending the pitch range up to C8: the tone's
-upper harmonics (`synthesizeBellTone()`'s 2.4x/4.1x multipliers) would alias
+One correctness note from extending the pitch range up to C8: the bell tone's
+upper harmonics (`synthesizeBellRaw()`'s 2.4x/4.1x multipliers) would alias
 above this app's 22050Hz sample rate at the top of that range — a harmonic
 above Nyquist doesn't just disappear, it folds back down as audible noise.
 Each harmonic is now faded out as it approaches Nyquist rather than left to
 alias; inaudible at the original fixed A5 tuning, but real once pitch went
 up to C8.
+
+## Instruments
+
+The **Sound** dropdown, just below Pitch, picks which of four procedural
+synthesis voices plays your rings — see
+[`Instrument.kt`](app/src/main/java/com/ehb/handbell/Instrument.kt) and the
+generators in `RingPlayer.kt`:
+
+- **Bell** (default) — the original tone: a decaying sine plus two
+  *inharmonic* partials (2.4x/4.1x the fundamental). Inharmonicity is what
+  makes a struck casting sound like a bell instead of a tuned string.
+- **Piano** — a *true* harmonic series (1x, 2x, 3x, 4x) instead, with higher
+  harmonics damping faster than the fundamental, the way a real struck
+  string's higher modes actually behave.
+- **Guitar** / **Electric Guitar** — Karplus-Strong: a noise-filled delay
+  line, repeatedly read and fed back through a cheap lowpass + decay. This is
+  a genuinely different algorithm from the two above, not just different
+  parameters — no `sin()`/`exp()` in its per-sample loop at all, since a
+  plucked string's "pluck then ring" character comes from resonating a noise
+  burst rather than summing pure tones. It's also correspondingly cheaper to
+  synthesize. Electric Guitar reuses the identical delay-line model with a
+  brighter filter setting plus a mild soft-clip, for a grittier/more
+  sustained character than the plain acoustic version.
+
+**These are synthesizer approximations, not sampled recordings.** Organ,
+trumpet, and clarinet were deliberately left out — they're sustained/blown
+voices that don't fit the strike-and-decay physical model the rest of this
+app (and a real handbell) is built around, and procedural synthesis of them
+specifically would land pretty far from convincing. A soundfont + real synth
+engine (e.g. FluidSynth) would give authentic sampled timbres for a much
+wider instrument set, but means replacing this whole `SoundPool`-based
+playback pipeline with a persistent MIDI-style synth, plus bundling a
+soundfont asset (tens to 100+MB) and a native/JNI dependency — a much larger,
+riskier undertaking, set aside for now in favor of what could actually be
+built and reasoned about correctly without a real device to test against
+throughout.
+
+Switching instruments takes the same background re-synthesis path as the
+pitch dropdown (~1s, old tones stay playable meanwhile) — there's no fast
+nudge equivalent for this one, since instrument choice is an occasional
+per-demo setting rather than something changed rapidly mid-performance.
+
+**Known limitation:** Karplus-Strong's delay line length must be a whole
+number of samples, so tuning accuracy degrades at high pitches where
+`sampleRate / frequency` is small — at C8 (~5.3 samples) the nearest
+achievable length is audibly sharp or flat by close to a semitone. Fixable
+with fractional-delay interpolation; not implemented, since the guitar
+voices are unlikely to be played at the very top of a handbell set's range
+in practice.

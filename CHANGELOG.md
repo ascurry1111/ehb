@@ -134,6 +134,26 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   22050Hz sample rate's Nyquist, where they'd fold back down as audible
   noise rather than simply disappear. Each harmonic now fades out as it
   approaches Nyquist instead.
+- Instrument selection: a **Sound** dropdown picks between four procedural
+  synthesis voices (Bell, Piano, Guitar, Electric Guitar) — new
+  `Instrument.kt`, and per-instrument raw-waveform generators in
+  `RingPlayer.kt` (`synthesizeBellRaw()` is the renamed original tone).
+  Guitar/Electric Guitar use Karplus-Strong (a noise-filled delay line fed
+  back through a lowpass + decay) rather than summed sine waves — a
+  genuinely different, and cheaper, algorithm, chosen because a plucked
+  string's character comes from resonating noise rather than summing pure
+  tones. Piano uses a true harmonic series (unlike the bell's deliberately
+  inharmonic partials) with higher harmonics damping faster than the
+  fundamental. Switching instruments re-synthesizes on a background thread,
+  same safety properties as the pitch dropdown. Organ/trumpet/clarinet were
+  considered and dropped — sustained/blown voices don't fit the
+  strike-and-decay model everything else here is built around. A soundfont +
+  native synth engine (e.g. FluidSynth) would give authentic sampled
+  instrument timbres across a much wider set, but was set aside as a
+  separate, much larger undertaking requiring a native/JNI dependency and a
+  large bundled asset that couldn't be built and verified without a real
+  device to test against throughout — see the "Instruments" section of the
+  Android README for the full reasoning.
 
 ## v0.1 — 2026-08-29
 

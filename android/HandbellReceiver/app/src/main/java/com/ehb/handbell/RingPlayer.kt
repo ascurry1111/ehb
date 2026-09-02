@@ -14,31 +14,34 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.tanh
+import kotlin.random.Random
 
 /**
- * Plays a synthesized bell tone on each ring, with velocity sensitivity —
- * harder swings get a brighter/longer tone AND are audibly louder — mapped
- * onto the six musical dynamic levels in DynamicLevel.kt.
+ * Plays a synthesized tone on each ring, with velocity sensitivity — harder
+ * swings get a brighter/longer tone AND are audibly louder — mapped onto the
+ * six musical dynamic levels in DynamicLevel.kt, at a chosen pitch
+ * (HandbellPitch.kt) and instrument voice (Instrument.kt).
  *
  * A real handbell keeps ringing after the strike until it naturally damps out
  * or the ringer stops it against their body, so each tone is a multi-second
  * natural decay rather than a short fixed blip -- see DURATION_S and the
- * decay-rate constants below. damp() cuts it short on demand, driven either
- * by the firmware's damp gesture (see BLE_CHAR_DAMP_UUID in
+ * per-instrument decay constants below. damp() cuts it short on demand,
+ * driven either by the firmware's damp gesture (see BLE_CHAR_DAMP_UUID in
  * feather_transmitter.ino) or by the manual Damp button in the app.
  *
- * Tones are synthesized at a chosen HandbellPitch (default A5, 880Hz -- what
- * this tone was originally tuned to) and handed to SoundPool, which is the
- * low-latency-appropriate API for short, frequently-retriggered sound
- * effects on Android. No synthesis or file I/O happens on the ring-event hot
- * path — only soundPool.play(). setPitch() re-synthesizes all six dynamic
- * levels at a new frequency on a background thread (about a second); the OLD
- * tones stay playable until the new ones are ready, so a ring mid-change
- * never drops -- it just plays once more at the previous pitch, then
- * switches.
+ * Tones are synthesized at the current (pitch, instrument) pair and handed to
+ * SoundPool, which is the low-latency-appropriate API for short,
+ * frequently-retriggered sound effects on Android. No synthesis or file I/O
+ * happens on the ring-event hot path — only soundPool.play().
+ * setPitch()/setInstrument() re-synthesize all six dynamic levels on a
+ * background thread (about a second); the OLD tones stay playable until the
+ * new ones are ready, so a ring mid-change never drops -- it just plays once
+ * more at the previous setting, then switches.
  *
- * nudgeSemitone() (the +/- buttons) is the fast path for a single-step change
+ * nudgeSemitone() (the +/- buttons) is the fast path for a single pitch step
  * and does NOT re-synthesize: it plays the already-loaded tones at a shifted
  * SoundPool playback rate instead (a semitone is a rate of 2^(1/12), trivially
  * inside SoundPool's documented 0.5-2.0 range), so it's instant. Nudges
@@ -49,12 +52,18 @@ import kotlin.math.sin
  * the caller, who just keeps calling nudgeSemitone() and getting an
  * immediate response either way.
  *
- * NOTE on loudness: the synthesized buffer itself is normalized to the same
- * peak amplitude for every level (see synthesizeBellTone) — that's a
- * deliberate choice to use the full 16-bit range for audio quality at every
- * level, NOT the mechanism for volume differences. Loudness comes entirely
- * from DynamicLevel.volume, passed to SoundPool.play() below. (An earlier
- * version scaled the waveform by strength before that per-buffer
+ * INSTRUMENTS are procedural synthesizer approximations, not sampled
+ * recordings -- see synthesizeBellRaw/synthesizePianoRaw/synthesizeKarplusStrongRaw
+ * for what each one actually is. All four share the same six-DynamicLevel /
+ * pitch / nudge / damp machinery above; only the raw-waveform generator
+ * differs per instrument.
+ *
+ * NOTE on loudness: every raw buffer is normalized to the same peak amplitude
+ * regardless of instrument or dynamic level (see finalizeToneBuffer) — that's
+ * a deliberate choice to use the full 16-bit range for audio quality
+ * everywhere, NOT the mechanism for volume differences. Loudness comes
+ * entirely from DynamicLevel.volume, passed to SoundPool.play() below. (An
+ * earlier version scaled the waveform by strength before that per-buffer
  * normalization, which just renormalized it straight back out — the buckets
  * had different timbre but were all played back at the same volume, which is
  * why they were hard to tell apart.)
@@ -63,33 +72,66 @@ class RingPlayer(private val context: Context) {
 
     private companion object {
         const val TAG = "RingPlayer"
-        // Lower than CD quality on purpose: the tone's harmonic content tops out
-        // around 4kHz (see synthesizeBellTone), so 22050Hz is well above Nyquist
-        // for it, and halving the sample rate roughly halves both the synthesis
-        // time and cache file size -- which matters more now that buffers run
-        // several seconds instead of under one.
+        // Lower than CD quality on purpose: the bell tone's harmonic content
+        // tops out around 4kHz (see synthesizeBellRaw), so 22050Hz is well
+        // above Nyquist for it, and halving the sample rate roughly halves
+        // both synthesis time and cache file size -- which matters more now
+        // that buffers run several seconds instead of under one.
         const val SAMPLE_RATE = 22050
 
-        // Buffer length. Generous relative to how long the decay actually takes
-        // (see BASE_DECAY_RATE below) so every level reaches near-silence well
-        // before the buffer ends -- avoids any click from an abrupt cutoff at a
-        // non-zero sample, on top of the explicit fade-to-zero tail below.
+        // Buffer length. Generous relative to how long any instrument's decay
+        // actually takes (all tuned to reach near-silence well before this)
+        // so nothing needs to be cut off abruptly -- on top of the explicit
+        // fade-to-zero tail below, which is the real click guarantee.
         const val DURATION_S = 9.0
 
+        // --- Bell (original tone; unchanged from before instruments existed) ---
         // Decay rate (per second) of the amplitude envelope: exp(-rate * t).
         // Louder dynamics decay more slowly (ring out longer), same as a real
         // bell has more energy to dissipate from a harder strike.
-        //   rate = BASE_DECAY_RATE + DECAY_RATE_SPREAD * (1 - strength)
-        // With this bell's actual strength range (~0.18 pp to ~0.74 ff, see
-        // synthesizeBellTone), that puts the "effectively silent" point
-        // (-40dB, envelope 0.01) at roughly 3.4s for pp and 5.5s for ff.
-        const val BASE_DECAY_RATE = 0.6
-        const val DECAY_RATE_SPREAD = 0.9
+        //   rate = BELL_BASE_DECAY_RATE + BELL_DECAY_RATE_SPREAD * (1 - strength)
+        // With this bell's actual strength range (~0.18 pp to ~0.74 ff), that
+        // puts the "effectively silent" point (-40dB, envelope 0.01) at
+        // roughly 3.4s for pp and 5.5s for ff.
+        const val BELL_BASE_DECAY_RATE = 0.6
+        const val BELL_DECAY_RATE_SPREAD = 0.9
 
-        // Safety-net linear fade over the last stretch of every buffer, so the
-        // sample value is exactly zero at the end regardless of how the decay
-        // math above worked out -- belt and suspenders against any click.
-        const val TAIL_FADE_S = 0.05
+        // --- Piano: true harmonic series (unlike the bell's inharmonic
+        // 2.4x/4.1x, which is what makes a bell sound like a bell and a piano
+        // sound like a piano), higher harmonics damping faster than the
+        // fundamental -- physically accurate for a struck string, and easy. ---
+        val PIANO_HARMONICS = doubleArrayOf(1.0, 2.0, 3.0, 4.0)
+        val PIANO_HARMONIC_GAINS = doubleArrayOf(1.0, 0.55, 0.30, 0.18)
+        const val PIANO_BASE_DECAY_RATE = 1.1
+        const val PIANO_DECAY_RATE_SPREAD = 1.2
+        const val PIANO_HARMONIC_DECAY_STEP = 0.35 // each higher harmonic decays this much faster
+
+        // --- Guitar / Electric Guitar: Karplus-Strong plucked-string physical
+        // model -- a noise-filled delay line, read and fed back through a
+        // simple lowpass+decay each sample. Cheap (no sin()/exp() in the hot
+        // loop at all) and a genuinely characteristic "pluck" by construction,
+        // not an approximation of one. ---
+        //
+        // decayFactor is derived from a target WALL-CLOCK decay time rather
+        // than applied as a fixed constant, because in Karplus-Strong the
+        // decay is applied once per trip around the delay line -- i.e. once
+        // per fundamental PERIOD, not once per sample. A fixed factor would
+        // therefore decay low notes for many seconds and high notes almost
+        // instantly, since a fixed time span contains far more periods at a
+        // high frequency than a low one. Solving for the per-period factor
+        // that hits a chosen amplitude at a chosen TIME keeps decay duration
+        // roughly consistent across the pitch range instead.
+        const val KS_TARGET_DECAY_S_MIN = 2.0  // pp
+        const val KS_TARGET_DECAY_S_MAX = 4.5  // ff
+        // The classic Karplus-Strong filter is a straight average of two
+        // adjacent samples (blend 0.5) -- it fully cancels a signal
+        // alternating every sample (the highest frequency the buffer can
+        // represent), which is what gives the algorithm its warm, natural
+        // damping. Moving blend away from 0.5 retains more of that top end,
+        // for a brighter/more metallic "electric" character.
+        const val KS_BLEND_ACOUSTIC = 0.5
+        const val KS_BLEND_ELECTRIC = 0.85
+        const val KS_ELECTRIC_DRIVE = 2.2 // soft-clip amount, electric only
 
         // Damp fade: quick enough to feel like an immediate stop (matching a
         // real handbell being pressed to the body), but long enough that
@@ -122,9 +164,12 @@ class RingPlayer(private val context: Context) {
     @Volatile private var soundIdByLevel: Map<DynamicLevel, Int> = emptyMap()
     @Volatile private var ready = false
 
-    // Guards against a rapid string of pitch changes racing each other: only
-    // the synthesis pass that's still current when it finishes gets applied.
+    // Guards against a rapid string of pitch/instrument changes racing each
+    // other: only the synthesis pass that's still current when it finishes
+    // gets applied.
     private val pitchGeneration = AtomicInteger(0)
+
+    @Volatile private var currentInstrument = Instrument.BELL
 
     // The pitch actually baked into soundIdByLevel right now, and the index
     // (into HandbellPitches.ALL) nudgeSemitone() is logically at -- these
@@ -136,18 +181,20 @@ class RingPlayer(private val context: Context) {
 
     // The bell is physically monophonic -- only one casting, one vibration
     // state -- so a new ring replaces whatever's currently sounding rather
-    // than layering another independent voice on top of it.
+    // than layering another independent voice on top of it. (Applied to every
+    // instrument here for consistency, not just the bell.)
     @Volatile private var activeStreamId: Int? = null
     @Volatile private var activeVolume: Float = 0f
 
-    /** Synthesizes and loads one tone per DynamicLevel at the given pitch. Call once,
-     *  off the main thread is fine (this kicks off a background thread itself). */
-    fun prepare(pitch: HandbellPitch = HandbellPitches.DEFAULT) {
+    /** Synthesizes and loads one tone per DynamicLevel at the given pitch/instrument.
+     *  Call once, off the main thread is fine (this kicks off a background thread itself). */
+    fun prepare(pitch: HandbellPitch = HandbellPitches.DEFAULT, instrument: Instrument = Instrument.BELL) {
         val index = HandbellPitches.ALL.indexOf(pitch)
         basePitchIndex = index
         currentPitchIndex = index
         playbackRate = 1f
-        synthesizeAllAsync(index)
+        currentInstrument = instrument
+        synthesizeAllAsync(index, instrument)
     }
 
     /** Re-synthesizes all six tones at a new pitch (the Spinner's big-jump path), on a
@@ -157,7 +204,14 @@ class RingPlayer(private val context: Context) {
         val index = HandbellPitches.ALL.indexOf(pitch)
         currentPitchIndex = index
         playbackRate = 1f
-        synthesizeAllAsync(index)
+        synthesizeAllAsync(index, currentInstrument)
+    }
+
+    /** Re-synthesizes all six tones with a new instrument voice, at the current pitch, on
+     *  a background thread. Same safety properties as setPitch(). */
+    fun setInstrument(instrument: Instrument) {
+        currentInstrument = instrument
+        synthesizeAllAsync(currentPitchIndex, instrument)
     }
 
     /** Shift by one semitone (direction: +1 or -1), clamped to HandbellPitches.ALL's range.
@@ -176,7 +230,7 @@ class RingPlayer(private val context: Context) {
             // drifted to, so future nudges get a fresh +/-9 semitone budget.
             // play() keeps using the current (clamped-safe) rate against the
             // OLD base in the meantime -- nothing to wait for here.
-            synthesizeAllAsync(currentPitchIndex)
+            synthesizeAllAsync(currentPitchIndex, currentInstrument)
         }
         return HandbellPitches.ALL[currentPitchIndex]
     }
@@ -190,12 +244,12 @@ class RingPlayer(private val context: Context) {
         playbackRate = Math.pow(2.0, clampedSemitones / 12.0).toFloat()
     }
 
-    private fun synthesizeAllAsync(pitchIndex: Int) {
+    private fun synthesizeAllAsync(pitchIndex: Int, instrument: Instrument) {
         val baseFreqHz = HandbellPitches.ALL[pitchIndex].frequencyHz
         val generation = pitchGeneration.incrementAndGet()
         Thread({
             val ids = DynamicLevel.entries.associateWith { level ->
-                val samples = synthesizeBellTone(level.representativePeakG.toDouble(), baseFreqHz)
+                val samples = synthesizeTone(instrument, level.representativePeakG.toDouble(), baseFreqHz)
                 val file = File.createTempFile("bell_tone_", ".wav", context.cacheDir)
                 writeWavFile(file, samples, SAMPLE_RATE)
                 soundPool.load(file.absolutePath, 1)
@@ -209,9 +263,9 @@ class RingPlayer(private val context: Context) {
                 basePitchIndex = pitchIndex
                 updatePlaybackRateFromOffset()
                 old.values.forEach { soundPool.unload(it) }
-                Log.i(TAG, "Loaded ${ids.size} tone variants at ${baseFreqHz}Hz.")
+                Log.i(TAG, "Loaded ${ids.size} $instrument tone variants at ${baseFreqHz}Hz.")
             } else {
-                // Superseded by a newer pitch change before this one finished --
+                // Superseded by a newer change before this one finished --
                 // discard rather than swap in stale tones.
                 ids.values.forEach { soundPool.unload(it) }
             }
@@ -267,12 +321,30 @@ class RingPlayer(private val context: Context) {
         soundPool.release()
     }
 
-    /** Same shape as bell_tone() in pc_ble_listener.py: a decaying sine + two harmonics,
-     *  extended with a much longer natural decay -- see the constants above. */
-    private fun synthesizeBellTone(peakG: Double, baseFreqHz: Double): ShortArray {
+    // -------------------------------------------------------------------
+    // SYNTHESIS -- one raw-waveform generator per instrument, sharing the
+    // same finalize step (tail fade + normalize + 16-bit quantize).
+    // -------------------------------------------------------------------
+
+    private data class RawTone(val samples: DoubleArray, val maxAbs: Double)
+
+    private fun synthesizeTone(instrument: Instrument, peakG: Double, baseFreqHz: Double): ShortArray {
+        val raw = when (instrument) {
+            Instrument.BELL -> synthesizeBellRaw(peakG, baseFreqHz)
+            Instrument.PIANO -> synthesizePianoRaw(peakG, baseFreqHz)
+            Instrument.GUITAR -> synthesizeKarplusStrongRaw(peakG, baseFreqHz, electric = false)
+            Instrument.ELECTRIC_GUITAR -> synthesizeKarplusStrongRaw(peakG, baseFreqHz, electric = true)
+        }
+        return finalizeToneBuffer(raw)
+    }
+
+    /** Same shape as bell_tone() in pc_ble_listener.py: a decaying sine + two inharmonic
+     *  "clang" partials (2.4x/4.1x -- an inharmonic ratio is what makes it sound like a
+     *  struck casting rather than a tuned string; see synthesizePianoRaw for the contrast). */
+    private fun synthesizeBellRaw(peakG: Double, baseFreqHz: Double): RawTone {
         val n = (SAMPLE_RATE * DURATION_S).toInt()
         val strength = min(1.0, max(0.15, (peakG - 1.0) / 5.0))
-        val decayRate = BASE_DECAY_RATE + DECAY_RATE_SPREAD * (1 - strength)
+        val decayRate = BELL_BASE_DECAY_RATE + BELL_DECAY_RATE_SPREAD * (1 - strength)
 
         // Harmonics above Nyquist alias into audible garbage rather than just
         // disappearing. That was harmless when the tone was fixed at A5
@@ -296,19 +368,103 @@ class RingPlayer(private val context: Context) {
             raw[i] = s
             maxAbs = max(maxAbs, abs(s))
         }
+        return RawTone(raw, maxAbs)
+    }
 
-        // Explicit fade-to-zero over the tail, on top of the natural exponential
-        // decay -- guarantees no click at the buffer's end regardless of how
-        // quiet the decay math actually got by then.
-        val tailSamples = (SAMPLE_RATE * TAIL_FADE_S).toInt().coerceAtMost(n)
+    /** True harmonic series (1x, 2x, 3x, 4x -- unlike the bell's inharmonic partials),
+     *  with higher harmonics damping faster than the fundamental. Both are what
+     *  distinguish a tuned struck string from a struck casting, and are cheap to model:
+     *  real strings' higher modes really do lose energy faster than the fundamental. */
+    private fun synthesizePianoRaw(peakG: Double, baseFreqHz: Double): RawTone {
+        val n = (SAMPLE_RATE * DURATION_S).toInt()
+        val strength = min(1.0, max(0.15, (peakG - 1.0) / 5.0))
+        val fundamentalDecay = PIANO_BASE_DECAY_RATE + PIANO_DECAY_RATE_SPREAD * (1 - strength)
+        val nyquist = SAMPLE_RATE / 2.0
+        val gains = DoubleArray(PIANO_HARMONICS.size) { i ->
+            PIANO_HARMONIC_GAINS[i] * harmonicGain(baseFreqHz * PIANO_HARMONICS[i], nyquist)
+        }
+
+        val raw = DoubleArray(n)
+        var maxAbs = 1e-9
+        for (i in 0 until n) {
+            val t = i.toDouble() / SAMPLE_RATE
+            var s = 0.0
+            for (h in PIANO_HARMONICS.indices) {
+                val decay = exp(-t * fundamentalDecay * (1.0 + PIANO_HARMONIC_DECAY_STEP * h))
+                s += gains[h] * decay * sin(2 * PI * baseFreqHz * PIANO_HARMONICS[h] * t)
+            }
+            s *= strength
+            raw[i] = s
+            maxAbs = max(maxAbs, abs(s))
+        }
+        return RawTone(raw, maxAbs)
+    }
+
+    /** Karplus-Strong plucked string: a delay line of length (sampleRate/frequency),
+     *  seeded with noise, repeatedly read and fed back through a cheap lowpass + decay.
+     *  No sin()/exp() in the per-sample loop at all -- genuinely a different (and
+     *  genuinely cheaper) algorithm from the two above, not just a different parameter
+     *  set, because a plucked string's characteristic "pluck then ring" timbre comes
+     *  from resonating a noise burst rather than from summing pure tones.
+     *
+     *  KNOWN LIMITATION: the delay length must be a whole number of samples, so tuning
+     *  accuracy degrades at high pitches where sampleRate/frequency is small -- at C8
+     *  (~5.3 samples) the nearest achievable length is audibly sharp/flat by close to a
+     *  semitone. Fixable with fractional-delay interpolation; not implemented since
+     *  demo-priority instruments (guitar/electric guitar) are rarely played at the very
+     *  top of a handbell set's range. */
+    private fun synthesizeKarplusStrongRaw(peakG: Double, baseFreqHz: Double, electric: Boolean): RawTone {
+        val n = (SAMPLE_RATE * DURATION_S).toInt()
+        val strength = min(1.0, max(0.15, (peakG - 1.0) / 5.0))
+
+        // Decay is derived from a target WALL-CLOCK time, not a fixed per-sample
+        // factor -- see the KS_TARGET_DECAY_S_* comment up top for why a fixed
+        // factor would decay high and low notes at wildly different real speeds.
+        val targetDecaySeconds = KS_TARGET_DECAY_S_MIN + (KS_TARGET_DECAY_S_MAX - KS_TARGET_DECAY_S_MIN) * strength
+        val periodsToTarget = targetDecaySeconds * baseFreqHz
+        val decayFactor = Math.pow(0.01, 1.0 / periodsToTarget) // reach amplitude 0.01 at the target time
+
+        val blend = if (electric) KS_BLEND_ELECTRIC else KS_BLEND_ACOUSTIC
+        val delayLen = max(2, (SAMPLE_RATE / baseFreqHz).roundToInt())
+        val ring = DoubleArray(delayLen) { Random.nextDouble(-1.0, 1.0) }
+
+        val raw = DoubleArray(n)
+        var maxAbs = 1e-9
+        var idx = 0
+        for (i in 0 until n) {
+            val current = ring[idx]
+            val next = ring[(idx + 1) % delayLen]
+            ring[idx] = (blend * current + (1 - blend) * next) * decayFactor
+
+            var s = current * strength
+            if (electric) {
+                // Mild soft-clip for a bit of sustained "electric" grit/drive,
+                // distinguishing it from the plain acoustic algorithm above
+                // despite sharing the same core delay-line model.
+                s = tanh(s * KS_ELECTRIC_DRIVE) / tanh(KS_ELECTRIC_DRIVE)
+            }
+            raw[i] = s
+            maxAbs = max(maxAbs, abs(s))
+            idx = (idx + 1) % delayLen
+        }
+        return RawTone(raw, maxAbs)
+    }
+
+    /** Tail fade (click safety net) + peak-normalize + 16-bit quantize -- shared by
+     *  every instrument's raw generator above. */
+    private fun finalizeToneBuffer(raw: RawTone): ShortArray {
+        val samples = raw.samples
+        val n = samples.size
+        val tailFadeS = 0.05
+        val tailSamples = (SAMPLE_RATE * tailFadeS).toInt().coerceAtMost(n)
         for (i in 0 until tailSamples) {
             val fade = i.toDouble() / tailSamples
-            raw[n - tailSamples + i] *= fade
+            samples[n - tailSamples + i] *= fade
         }
 
         val out = ShortArray(n)
         for (i in 0 until n) {
-            val normalized = (raw[i] / maxAbs) * 0.8
+            val normalized = (samples[i] / raw.maxAbs) * 0.8
             out[i] = (normalized * 32767.0).toInt().coerceIn(-32768, 32767).toShort()
         }
         return out

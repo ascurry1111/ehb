@@ -29,6 +29,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spinnerPitch: Spinner
     private lateinit var btnPitchDown: Button
     private lateinit var btnPitchUp: Button
+    private lateinit var spinnerInstrument: Spinner
     private lateinit var lvRingLog: ListView
     private lateinit var rootView: android.view.View
 
@@ -66,6 +67,7 @@ class MainActivity : AppCompatActivity() {
         const val MAX_LOG_ENTRIES = 200
         const val PREFS_NAME = "handbell_prefs"
         const val KEY_PITCH_NAME = "pitch_name"
+        const val KEY_INSTRUMENT_NAME = "instrument_name"
     }
 
     private val requestPermissions =
@@ -97,6 +99,7 @@ class MainActivity : AppCompatActivity() {
         spinnerPitch = findViewById(R.id.spinnerPitch)
         btnPitchDown = findViewById(R.id.btnPitchDown)
         btnPitchUp = findViewById(R.id.btnPitchUp)
+        spinnerInstrument = findViewById(R.id.spinnerInstrument)
         lvRingLog = findViewById(R.id.lvRingLog)
 
         ringLogAdapter = ArrayAdapter(this, R.layout.item_ring_log, R.id.tvRingLogItem, mutableListOf<String>())
@@ -117,13 +120,17 @@ class MainActivity : AppCompatActivity() {
         // audio stream, not on the bell.
         btnDamp.setOnClickListener { ringPlayer.damp() }
 
-        val savedPitch = HandbellPitches.byName(
-            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_PITCH_NAME, null) ?: ""
-        ) ?: HandbellPitches.DEFAULT
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val savedPitch = HandbellPitches.byName(prefs.getString(KEY_PITCH_NAME, null) ?: "")
+            ?: HandbellPitches.DEFAULT
+        val savedInstrument = prefs.getString(KEY_INSTRUMENT_NAME, null)?.let { name ->
+            runCatching { Instrument.valueOf(name) }.getOrNull()
+        } ?: Instrument.BELL
 
         ringPlayer = RingPlayer(this)
-        ringPlayer.prepare(savedPitch)
+        ringPlayer.prepare(savedPitch, savedInstrument)
         setUpPitchSpinner(savedPitch)
+        setUpInstrumentSpinner(savedInstrument)
 
         btnPitchDown.setOnClickListener { nudgePitch(-1) }
         btnPitchUp.setOnClickListener { nudgePitch(+1) }
@@ -158,6 +165,30 @@ class MainActivity : AppCompatActivity() {
                     val pitch = HandbellPitches.ALL[position]
                     ringPlayer.setPitch(pitch)
                     savePitchPreference(pitch)
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
+        }
+    }
+
+    private fun setUpInstrumentSpinner(initialInstrument: Instrument) {
+        val labels = Instrument.entries.map { it.label }
+        val adapter = ArrayAdapter(this, R.layout.item_pitch_spinner, R.id.tvPitchItem, labels)
+        adapter.setDropDownViewResource(R.layout.item_pitch_spinner)
+        spinnerInstrument.adapter = adapter
+        spinnerInstrument.setSelection(Instrument.entries.indexOf(initialInstrument))
+
+        // Same reasoning as the pitch spinner: attach after the initial selection
+        // has taken effect, so restoring the saved/default instrument on launch
+        // doesn't trigger a redundant re-synthesis of what prepare() just built.
+        spinnerInstrument.post {
+            spinnerInstrument.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    val instrument = Instrument.entries[position]
+                    ringPlayer.setInstrument(instrument)
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putString(KEY_INSTRUMENT_NAME, instrument.name)
+                        .apply()
                 }
                 override fun onNothingSelected(parent: AdapterView<*>?) {}
             }
