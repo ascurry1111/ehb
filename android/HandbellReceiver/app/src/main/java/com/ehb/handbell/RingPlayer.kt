@@ -23,9 +23,9 @@ import kotlin.math.sin
  * A real handbell keeps ringing after the strike until it naturally damps out
  * or the ringer stops it against their body, so each tone is a multi-second
  * natural decay rather than a short fixed blip -- see DURATION_S and the
- * decay-rate constants below. mute() cuts it short on demand (the app calls
- * this when the firmware reports the backward-swing-then-stop mute gesture;
- * see BLE_CHAR_MUTE_UUID in feather_transmitter.ino).
+ * decay-rate constants below. damp() cuts it short on demand, driven either
+ * by the firmware's damp gesture (see BLE_CHAR_DAMP_UUID in
+ * feather_transmitter.ino) or by the manual Damp button in the app.
  *
  * All tones are synthesized ONCE up front (one per DynamicLevel) and handed
  * to SoundPool, which is the low-latency-appropriate API for short,
@@ -75,11 +75,11 @@ class RingPlayer(private val context: Context) {
         // math above worked out -- belt and suspenders against any click.
         const val TAIL_FADE_S = 0.05
 
-        // Mute fade: quick enough to feel like an immediate stop (matching a
+        // Damp fade: quick enough to feel like an immediate stop (matching a
         // real handbell being pressed to the body), but long enough that
         // stopping mid-waveform doesn't produce an audible click.
-        const val MUTE_FADE_STEPS = 5
-        const val MUTE_FADE_STEP_MS = 8L
+        const val DAMP_FADE_STEPS = 5
+        const val DAMP_FADE_STEP_MS = 8L
     }
 
     private val soundPool = SoundPool.Builder()
@@ -132,7 +132,7 @@ class RingPlayer(private val context: Context) {
         // (no fade): the new tone's own attack transient masks any click,
         // and this is the ring-event hot path, so keep it to one cheap call.
         activeStreamId?.let { soundPool.stop(it) }
-        fadeHandler.removeCallbacksAndMessages(null) // cancel any in-flight mute fade
+        fadeHandler.removeCallbacksAndMessages(null) // cancel any in-flight damp fade
 
         val level = DynamicLevel.forPeakG(peakG)
         val soundId = soundIdByLevel[level] ?: return
@@ -140,10 +140,10 @@ class RingPlayer(private val context: Context) {
         activeVolume = level.volume
     }
 
-    /** Stop whatever's currently ringing, quickly but without a click. Call when the
-     *  firmware reports the backward-swing-then-stop mute gesture. Safe to call when
-     *  nothing is playing (no-op). */
-    fun mute() {
+    /** Stop whatever's currently ringing, quickly but without a click -- the software
+     *  equivalent of touching the casting. Driven by the firmware's damp gesture or
+     *  the app's manual Damp button. Safe to call when nothing is playing (no-op). */
+    fun damp() {
         // Deliberately leaves activeStreamId set until the fade actually finishes
         // (rather than nulling it here) -- so if play() is called again mid-fade,
         // it still finds this stream and hard-stops it, instead of the pending
@@ -152,15 +152,15 @@ class RingPlayer(private val context: Context) {
         val streamId = activeStreamId ?: return
         val startVolume = activeVolume
         fadeHandler.removeCallbacksAndMessages(null)
-        for (step in 1..MUTE_FADE_STEPS) {
+        for (step in 1..DAMP_FADE_STEPS) {
             fadeHandler.postDelayed({
-                val v = startVolume * (1f - step.toFloat() / MUTE_FADE_STEPS)
+                val v = startVolume * (1f - step.toFloat() / DAMP_FADE_STEPS)
                 soundPool.setVolume(streamId, v, v)
-                if (step == MUTE_FADE_STEPS) {
+                if (step == DAMP_FADE_STEPS) {
                     soundPool.stop(streamId)
                     if (activeStreamId == streamId) activeStreamId = null
                 }
-            }, step * MUTE_FADE_STEP_MS)
+            }, step * DAMP_FADE_STEP_MS)
         }
     }
 

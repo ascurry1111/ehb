@@ -46,7 +46,7 @@ If you have the STEMMA QT versions of both boards, just use the STEMMA QT cable 
 5. **Test the ESP-NOW → PC path**: run `pc_serial_listener.py --list` to find the DEVKITC-V4's port, then `pc_serial_listener.py --port <that port>`. Swing the bell — you should hear a tone.
 6. **Test the BLE → PC path**: run `pc_ble_listener.py` (the DEVKITC-V4 isn't involved in this path at all — the Feather talks straight to the PC's Bluetooth radio). Swing the bell — you should hear a tone.
 
-## Ring detection and mute
+## Ring detection and damp
 
 Detection models how a real handbell actually rings — a forward swing followed
 by a **sudden stop** (which is when the clapper catches up and strikes) — rather
@@ -56,11 +56,18 @@ comment at the top of `feather_transmitter.ino` for the full rationale.
 
 A real handbell keeps ringing after the strike until it naturally damps out, or
 until the ringer presses it to their body to stop it. The Android app plays a
-multi-second decaying tone per ring rather than a short blip, and **mute** is
-the gesture that cuts it short: a **backward** swing (toward the body) followed
-by a sudden stop — the mirror image of ring detection, sharing the same state
-machine, since the bell obviously can't be moving forward and backward at once.
-See `SUSTAIN AND MUTE` in the sketch's header comment.
+multi-second decaying tone per ring rather than a short blip, and **damp** is
+the gesture that cuts it short.
+
+**Ring and damp are deliberately not symmetric.** A ring is directional — the
+clapper only travels fore/aft and is sprung against striking backward — so it
+stays a single-axis test on forward velocity. A damp is *omnidirectional*:
+physically it's just "the casting contacted something," and in practice arm
+geometry means the bell usually comes back to the body around 45° off the
+ring plane, laterally. So damp detection works on the **full 3D velocity
+vector**, arming on speed in any direction outside a forward exclusion cone
+and firing on deceleration measured *along the direction of travel* rather
+than any fixed axis. See `SUSTAIN AND DAMP` in the sketch's header comment.
 
 ### Mounting orientation
 
@@ -85,7 +92,8 @@ reflash, open Serial Monitor at 115200:
 ### Then: tune the thresholds
 
 These interact, so change one at a time and watch the `RING #n peak=..g
-swing=..m/s` / `MUTE swing=..m/s` lines while ringing and muting by hand:
+swing=..m/s` / `DAMP speed=..m/s decel=..` lines while ringing and damping by
+hand:
 
 - `SWING_ARM_VELOCITY` (m/s) — how fast the bell must actually be travelling
   forward before a stop can ring it. **Raise it** if handling still rings the
@@ -94,10 +102,22 @@ swing=..m/s` / `MUTE swing=..m/s` lines while ringing and muting by hand:
 - `STOP_DECEL_THRESHOLD` (m/s²) — how abruptly the bell must stop to ring.
   **Raise it** if soft stops ring; **lower it** if you have to stop the bell
   unnaturally hard.
-- `MUTE_ARM_VELOCITY` / `MUTE_STOP_DECEL_THRESHOLD` — the same two knobs for
-  the mute gesture. They default to the same values as their ring
-  counterparts, but tune independently if pressing the bell to your body
-  produces a noticeably different force profile than stopping a forward swing.
+- `DAMP_ARM_SPEED` (m/s) — how fast the bell must be travelling **in any
+  direction** before a stop can damp it. Compare against the `speed=` figure
+  in the `CALIBRATION_MODE 2` trace.
+- `DAMP_STOP_DECEL_THRESHOLD` (m/s²) — how abruptly the bell must stop to
+  damp, measured along its direction of travel. Defaults slightly below
+  `STOP_DECEL_THRESHOLD`, since contacting a soft body is less abrupt than
+  the deliberate stop that rings the bell, and a missed damp is much less
+  disruptive than a missed ring. Compare against the trace's `decel=`.
+- `DAMP_EXCLUSION_COS` — **the only thing separating the two gestures.** It's
+  the cosine of a cone half-angle around the forward axis; motion inside the
+  cone can't damp. Default `0.707` = 45°. Raise toward 1.0 for a narrower
+  cone (damps trigger more readily, but a slightly-off-axis ring swing risks
+  damping its own tone); lower for a wider cone (ring better protected, but
+  damps that come back near the ring axis get missed). The trace's `cosFwd`
+  shows where each gesture actually falls: ~1.0 when ringing, well below the
+  threshold when damping.
 - `RELEASE_VELOCITY` / `REFRACTORY_MS` — shared by both gestures; raise if one
   motion produces a burst of events.
 
@@ -105,11 +125,11 @@ The defaults are reasoned starting points, not measured ones — expect to adjus
 them against your actual bell.
 
 **Set them from real data rather than guesswork:** `CALIBRATION_MODE 2` streams
-the forward acceleration and velocity profile whenever the bell is moving, with
-rings/mutes still firing. Ring and mute normally a few times, then deliberately
-do the things that *shouldn't* trigger either — pick the bell up, tap the
-handle, tilt it slowly in each direction — and compare the `peakV` values. Set
-`SWING_ARM_VELOCITY`/`MUTE_ARM_VELOCITY` in the gap between the groups.
+`aFwd`, `vFwd`, `speed`, `cosFwd`, `decel` and `peakV` whenever the bell is
+moving, with rings/damps still firing. Ring and damp normally a few times —
+including damping from the awkward angles you'd actually use — then deliberately
+do the things that *shouldn't* trigger either (pick the bell up, tap the handle,
+tilt it slowly) and set each threshold in the gap between the groups.
 
 **The failure mode to watch for** is a slow forward *tilt* arming the detector.
 The sensor sits well above the wrist pivot and the bell rotates through a large
@@ -131,7 +151,7 @@ GATT service exposes four characteristics, all under service UUID `6e400001-...`
 | Ring | `...0002` | Notify on every ring: `RingEvent` (uint32 ringId, uint16 peakMilliG, uint32 timestampMs) |
 | Battery | `...0003` | Notify every 5s: `BatteryStatus` (uint8 percent, uint8 state, uint16 milliVolts, uint16 estimatedMinutesRemaining) |
 | Time | `...0004` | Read-only, returns current `millis()` fresh each read — for clock-sync/latency measurement |
-| Mute | `...0005` | Notify on the backward-swing-then-stop gesture: `MuteEvent` (uint32 timestampMs) |
+| Damp | `...0005` | Notify on the omnidirectional damp gesture: `DampEvent` (uint32 timestampMs) |
 
 All multi-byte fields are little-endian.
 

@@ -75,6 +75,19 @@
             android:focusable="true"
             android:background="?attr/selectableItemBackground" />
 
+        <!-- Manual damp: stops the currently sounding tone, same as the bell's
+             damp gesture. Unlike the latency toggle above, this is meant to be
+             obvious and easy to hit mid-demo. -->
+        <Button
+            android:id="@+id/btnDamp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:paddingHorizontal="32dp"
+            android:text="Damp"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#37474F" />
+
     </LinearLayout>
 
     <LinearLayout

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.widget.ArrayAdapter
+import android.widget.Button
 import android.widget.ListView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,6 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvLatency: TextView
     private lateinit var tvBattery: TextView
     private lateinit var tvClearLog: TextView
+    private lateinit var btnDamp: Button
     private lateinit var lvRingLog: ListView
     private lateinit var rootView: android.view.View
 
@@ -76,6 +78,7 @@ class MainActivity : AppCompatActivity() {
         tvLatency = findViewById(R.id.tvLatency)
         tvBattery = findViewById(R.id.tvBattery)
         tvClearLog = findViewById(R.id.tvClearLog)
+        btnDamp = findViewById(R.id.btnDamp)
         lvRingLog = findViewById(R.id.lvRingLog)
 
         ringLogAdapter = ArrayAdapter(this, R.layout.item_ring_log, R.id.tvRingLogItem, mutableListOf<String>())
@@ -91,6 +94,10 @@ class MainActivity : AppCompatActivity() {
             ringHistory.clear()
             ringLogAdapter.clear()
         }
+
+        // Works whether or not the bell is connected -- it acts on the local
+        // audio stream, not on the bell.
+        btnDamp.setOnClickListener { ringPlayer.damp() }
 
         ringPlayer = RingPlayer(this)
         ringPlayer.prepare()
@@ -119,7 +126,7 @@ class MainActivity : AppCompatActivity() {
             onRing = { event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs ->
                 runOnUiThread { onRing(event, receivedAtElapsedMs, estimatedDetectionAtElapsedMs) }
             },
-            onMute = { runOnUiThread { ringPlayer.mute() } },
+            onDamp = { runOnUiThread { ringPlayer.damp() } },
         ).also { it.start() }
     }
 

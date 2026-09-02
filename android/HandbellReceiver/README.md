@@ -17,7 +17,7 @@ specifically for a live demo on a OnePlus 15 Pro (Android 12+) — see
    `SoundPool.play()`), picking both tone and volume from the six musical
    dynamic levels (pp–ff) in [`DynamicLevel.kt`](app/src/main/java/com/ehb/handbell/DynamicLevel.kt).
    The tone is a several-second natural decay, not a short blip — see
-   "Sustain and mute" below.
+   "Sustain and damp" below.
 4. Auto-reconnects if the connection drops, so the demo can survive walking
    out of range briefly.
 5. Separately (and at low priority — see the firmware header comment),
@@ -70,6 +70,8 @@ verify one here without the Android tooling installed). To get it building:
 - **Latency** defaults to just the total. Tap the latency line to toggle the
   ring→phone / phone→sound breakdown on and off — there's no visible button
   for this by design; the ring log respects the same toggle.
+- **Damp** button stops the currently sounding tone by hand. Deliberately
+  obvious and easy to hit mid-demo, unlike the hidden latency toggle.
 - **Ring log** lists every ring this session, newest first, in the same
   format as the "last ring" line. Tap **Clear** (top-right of the log
   section) to reset it — this only clears the on-screen log, it doesn't
@@ -111,22 +113,28 @@ particular, "Charging" only appears once the firmware has seen voltage
 a battery resting at or near full charge is reported as a plain percentage
 rather than a guessed charge state.
 
-## Sustain and mute
+## Sustain and damp
 
 A real handbell keeps ringing after the strike until it naturally damps out,
 or until the ringer presses it to their body to stop it. `RingPlayer` models
 this: each tone is a multi-second decaying sustain (`DURATION_S`/
 `BASE_DECAY_RATE`/`DECAY_RATE_SPREAD` in `RingPlayer.kt` — louder dynamics
 ring out longer, same as a real bell has more energy to dissipate), and
-`mute()` cuts it off early with a quick fade (~40ms — fast enough to feel
-immediate, slow enough to avoid a click) when the firmware reports the
-backward-swing-then-stop mute gesture over its own BLE characteristic.
+`damp()` cuts it off early with a quick fade (~40ms — fast enough to feel
+immediate, slow enough to avoid a click).
+
+Two things trigger a damp:
+- **The bell's damp gesture** — moving the bell in any direction outside the
+  forward ring cone and stopping it (typically against the body). Detected on
+  the firmware side; see `SUSTAIN AND DAMP` in `feather_transmitter.ino`.
+- **The Damp button** in the app, for stopping a tone by hand. It acts on the
+  local audio stream, so it works whether or not the bell is connected.
 
 The bell is physically monophonic — one casting, one vibration state — so a
 new ring always replaces whatever's currently sounding rather than layering a
 second independent tone on top of it. Ring again mid-decay (without muting
 first) and you'll hear the new strike cut the old one off, not overlap it —
-which also matches normal handbell technique, where you don't have to mute
+which also matches normal handbell technique, where you don't have to damp
 between every ring.
 
 ## Dynamics (volume) and tuning tone feel
@@ -140,12 +148,14 @@ next to the peak-g reading and in the ring log.
 `DynamicLevel` is the single source of truth for both display and audio —
 `RingPlayer` uses the same six levels for tone shape (brighter/longer at
 higher levels) *and* playback volume, so they can't drift out of sync. Volume
-is spread geometrically (equal ratio between consecutive levels) from 0.08 to
-1.00, roughly 22dB pp-to-ff — deliberately wide, since equal *linear* steps
-sound bunched up at the loud end to the ear, and an earlier version's volume
-had no audible difference between levels at all (a per-buffer normalization
-step was quietly canceling out the loudness scaling — see the comment atop
-`RingPlayer.kt`).
+is spread geometrically (equal ratio between consecutive levels) from 0.20 to
+1.00, about 14dB pp-to-ff — geometric rather than linear because equal linear
+steps sound bunched up at the loud end to the ear. (An earlier version had no
+audible difference between levels at all: a per-buffer normalization step was
+quietly canceling out the loudness scaling — see the comment atop
+`RingPlayer.kt`. A later one ran 0.08–1.00, which made pp too quiet to hear
+comfortably; a phone speaker's quiet end has to stay above the room, not just
+above silence.)
 
 To retune:
 - **Dynamic boundaries** — adjust the g-value bands in `DynamicLevel.kt` if

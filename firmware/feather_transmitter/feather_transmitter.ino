@@ -42,25 +42,46 @@
     is actually mounted, or none of this works. Set CALIBRATION_MODE 1 and
     follow the procedure there; it takes about 30 seconds.
 
-  SUSTAIN AND MUTE — v0.4
+  SUSTAIN AND DAMP — v0.4
     A real handbell keeps ringing after the strike until it naturally damps
     out, or until the ringer brings it to their body to stop it (touching the
-    casting kills the vibration). The Android app now plays a multi-second
+    casting kills the vibration). The Android app plays a multi-second
     decaying tone per ring rather than a short fixed blip, so this firmware
-    needs to tell it when to cut that tone off early.
+    needs to tell it when to cut that tone off early. That's a "damp", the
+    standard handbell term.
 
-    Mute is detected as the mirror image of ring detection: a BACKWARD swing
-    (negative forward velocity — the same direction the clapper springs
-    forbid for ringing) followed by a sudden stop, the way bringing the bell
-    to your chest/shoulder actually looks to the accelerometer. It's a
-    separate BLE characteristic (BLE_CHAR_MUTE_UUID) rather than a field on
-    RingEvent, since it's a genuinely different signal — "stop whatever is
-    currently sounding," not "a new strike happened."
+    RING AND DAMP ARE NOT SYMMETRIC — this is the key asymmetry to preserve:
 
-    The two gestures share one state machine (RING_IDLE / RING_ARMED_FORWARD
-    / RING_ARMED_BACKWARD / RING_SETTLING) since forwardVelocity can't be
-    both positive and negative at once — arming one direction is naturally
-    exclusive with the other.
+      A ring is DIRECTIONAL. The clapper only travels fore/aft and is sprung
+      against striking backward, so only a forward swing + stop rings the
+      bell. That stays a single-axis test on forwardVelocity.
+
+      A damp is OMNIDIRECTIONAL. Physically it's just "the casting contacted
+      something" — any orientation works. And in practice the ringer's arm
+      geometry means the bell rarely comes back along the ring axis at all:
+      bringing it to the chest/shoulder typically contacts around 45° off the
+      normal plane of motion, laterally. An earlier version tested only for
+      backward motion along the forward axis, which forced the ringer to
+      rotate the bell in-hand to damp it — exactly backwards from how the
+      gesture actually wants to work.
+
+    So damp detection works on the full 3D velocity vector:
+      - Arm when SPEED (vector magnitude, any direction) exceeds
+        DAMP_ARM_SPEED, and the direction is more than DAMP_EXCLUSION_ANGLE
+        off the +forward axis — that exclusion cone is what keeps a forward
+        ring swing from also arming a damp and cutting off its own tone.
+      - Fire when there's a sharp deceleration ALONG THE DIRECTION OF TRAVEL
+        (dot product of linear acceleration with the unit motion vector),
+        rather than along any fixed axis. That's what makes it work at 45°
+        lateral, straight down, or anywhere else.
+
+    Damp is a separate BLE characteristic (BLE_CHAR_DAMP_UUID) rather than a
+    field on RingEvent, since it's a genuinely different signal — "stop
+    whatever is currently sounding," not "a new strike happened."
+
+    Both gestures share one state machine (RING_IDLE / RING_ARMED_FORWARD /
+    RING_ARMED_DAMP / RING_SETTLING); the forward-cone exclusion above is
+    what keeps the two from arming on the same motion.
 
   v0.2 NOTE — this variant drops ESP-NOW/WiFi entirely. It was built for a
   live demo where the receiver is an Android phone (Android has no ESP-NOW
@@ -167,13 +188,13 @@
 //         FORWARD_SIGN -1.0 (expected here), positive means +1.0.
 //       - Confirm: vFwd should go strongly POSITIVE on a forward swing. If it
 //         goes negative, flip FORWARD_SIGN.
-//   2 = swing trace (rings/mutes still fire) — streams the forward
-//       acceleration and velocity profile whenever the bell is moving, so the
+//   2 = swing trace (rings/damps still fire) — streams aFwd, vFwd, speed,
+//       cosFwd, decel and peakV whenever the bell is moving, so the
 //       thresholds below can be set from real numbers. Ring a few times
-//       normally, mute a few times (swing back to the body and stop), then
-//       deliberately do the things that should NOT trigger either (pick it
-//       up, tap the handle, tilt it slowly in each direction) and compare
-//       the peakV/state trace across all of them.
+//       normally, damp a few times (including from the awkward angles you'd
+//       actually use), then deliberately do the things that should NOT
+//       trigger either (pick it up, tap the handle, tilt it slowly) and
+//       compare the trace across all of them.
 #define CALIBRATION_MODE 0
 
 // --- Ring detection tuning -------------------------------------------------
@@ -214,13 +235,25 @@
 // are being missed.
 #define SWING_ARM_VELOCITY      0.70f
 
-// Backward speed (m/s) the bell must reach before a stop counts as a mute —
-// i.e. bringing the bell toward the body with real intent, not just easing
-// off a swing. Same tuning knobs apply as SWING_ARM_VELOCITY, in reverse.
-#define MUTE_ARM_VELOCITY       0.70f
+// Speed (m/s, ANY direction) the bell must reach before a stop counts as a
+// damp — i.e. moving toward the body with real intent, not just drifting.
+// Unlike the ring threshold above this is a vector magnitude, not a
+// single-axis test; see SUSTAIN AND DAMP in the header.
+#define DAMP_ARM_SPEED          0.60f
 
-// Velocity must fall back below this (m/s), in whichever direction was
-// armed, before the detector releases and can re-arm.
+// How far off the +forward axis the motion must be before it can arm a damp,
+// as the cosine of the exclusion half-angle. cos(45°) ~= 0.707, so any motion
+// travelling more than 45° away from "straight forward" is damp-eligible.
+// This cone is the ONLY thing separating the two gestures, so:
+//   RAISE toward 1.0  -> narrower exclusion, damp triggers more readily
+//                        (risk: a slightly-off-axis ring swing damps itself)
+//   LOWER toward 0.0  -> wider exclusion, ring is better protected
+//                        (risk: damps that come back near the ring axis miss)
+#define DAMP_EXCLUSION_COS      0.707f
+
+// Velocity must fall back below this (m/s) before the detector releases and
+// can re-arm. Applied to signed forward velocity when armed forward, and to
+// vector speed when armed for a damp or settling after either.
 #define RELEASE_VELOCITY        0.25f
 
 // Deceleration (m/s^2, opposing the swing) that counts as "the bell stopped".
@@ -228,12 +261,13 @@
 // have to stop the bell unnaturally hard to get a ring.
 #define STOP_DECEL_THRESHOLD    15.0f
 
-// Deceleration (m/s^2, opposing the backward motion) that counts as "the
-// bell was pressed to a stop" for muting. Defaults to the same magnitude as
-// STOP_DECEL_THRESHOLD as a starting point — contacting the body is a
-// similarly abrupt motion — but tune independently with CALIBRATION_MODE 2
-// if it turns out to feel different (e.g. a soft chest vs. a firm shoulder).
-#define MUTE_STOP_DECEL_THRESHOLD 15.0f
+// Deceleration (m/s^2, measured ALONG THE DIRECTION OF TRAVEL rather than any
+// fixed axis) that counts as "the bell was pressed to a stop" for a damp.
+// Slightly lower than STOP_DECEL_THRESHOLD by default: contacting a soft
+// body damps less abruptly than the deliberate stop that rings the bell, and
+// a missed damp is far less disruptive than a missed ring. Tune with
+// CALIBRATION_MODE 2 against the decel= figure it traces.
+#define DAMP_STOP_DECEL_THRESHOLD 12.0f
 
 // Below this linear acceleration (m/s^2) the bell is considered at rest, and
 // after REST_SAMPLES_REQUIRED consecutive samples the velocity integrator is
@@ -241,7 +275,7 @@
 #define REST_ACCEL_THRESHOLD    0.60f
 #define REST_SAMPLES_REQUIRED   40     // 100ms at 400Hz
 
-#define REFRACTORY_MS           250    // minimum gap after a ring/mute before another can fire
+#define REFRACTORY_MS           250    // minimum gap after a ring/damp before another can fire
 
 // Random-but-fixed UUIDs for the BLE service/characteristic. Must match the
 // UUIDs the Android app scans/subscribes for (see android/.../RingEvent.kt).
@@ -250,7 +284,7 @@
 #define BLE_CHAR_RING_UUID    "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_BATTERY_UUID "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_TIME_UUID    "6e400004-b5a3-f393-e0a9-e50e24dcca9e"
-#define BLE_CHAR_MUTE_UUID    "6e400005-b5a3-f393-e0a9-e50e24dcca9e"
+#define BLE_CHAR_DAMP_UUID    "6e400005-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_DEVICE_NAME       "WirelessHandbell"
 
 // Preferred connection parameters, requested as soon as a central connects.
@@ -285,20 +319,20 @@ NimBLEServer* bleServer = nullptr;
 NimBLECharacteristic* ringCharacteristic = nullptr;
 NimBLECharacteristic* batteryCharacteristic = nullptr;
 NimBLECharacteristic* timeCharacteristic = nullptr;
-NimBLECharacteristic* muteCharacteristic = nullptr;
+NimBLECharacteristic* dampCharacteristic = nullptr;
 bool bleClientConnected = false;
 
 uint32_t ringCounter = 0;
 
-// --- Ring/mute detection state ----------------------------------------------
-// One state machine for both gestures: forwardVelocity can't be positive and
-// negative at once, so arming a swing in one direction is naturally exclusive
-// with the other. See the SUSTAIN AND MUTE header comment.
+// --- Ring/damp detection state ----------------------------------------------
+// One state machine for both gestures. They're kept apart by the forward
+// exclusion cone (DAMP_EXCLUSION_COS), not by direction sign — see the
+// SUSTAIN AND DAMP header comment for why a damp has to be omnidirectional.
 enum RingState : uint8_t {
-  RING_IDLE,             // watching for either direction to build up
+  RING_IDLE,             // watching for either gesture to build up
   RING_ARMED_FORWARD,    // armed: moving forward fast enough to ring on a stop
-  RING_ARMED_BACKWARD,   // armed: moving backward fast enough to mute on a stop
-  RING_SETTLING,         // just fired (ring or mute); waiting for the swing to settle
+  RING_ARMED_DAMP,       // armed: moving fast enough, off-axis, to damp on a stop
+  RING_SETTLING,         // just fired (ring or damp); waiting for the swing to settle
 };
 
 RingState ringState = RING_IDLE;
@@ -309,13 +343,20 @@ unsigned long lastSampleUs = 0;
 bool gravityInitialized = false;
 float gravityX = 0, gravityY = 0, gravityZ = 0;
 
-// Leaky-integrated forward velocity, and per-swing peaks for the ring payload.
-// peakSwingVelocity tracks SPEED (magnitude), not signed velocity -- it needs
-// to mean something for both a forward swing (positive) and a backward mute
-// swing (negative).
-float forwardVelocity = 0;
+// Leaky-integrated velocity as a full 3D vector. Ring detection only cares
+// about its forward component, but a damp can come from any direction, so the
+// whole vector has to be carried -- see SUSTAIN AND DAMP in the header.
+float velX = 0, velY = 0, velZ = 0;
+
+// Unit vector of travel, captured at the fastest point of the current gesture.
+// Damp deceleration is measured along THIS rather than a fixed axis, which is
+// what lets a damp register at 45° lateral, straight down, or anywhere else.
+// Sampling it at peak speed (rather than continuously) keeps it stable: the
+// direction of a slow velocity vector is mostly noise.
+float travelDirX = 0, travelDirY = 0, travelDirZ = 0;
+
 float peakLinearAccel = 0;
-float peakSwingVelocity = 0;
+float peakSwingVelocity = 0;   // peak SPEED (magnitude) this gesture, for logging/payload
 int restSamples = 0;
 
 // Wire-format packet sent as the BLE notify payload.
@@ -326,13 +367,13 @@ typedef struct __attribute__((packed)) {
   uint32_t timestampMs;   // millis() at time of detection, for latency diagnostics
 } RingEvent;
 
-// Wire-format packet sent as the mute notify payload. Deliberately minimal —
-// a mute is a pure "stop sounding" signal, not a new strike, so it doesn't
+// Wire-format packet sent as the damp notify payload. Deliberately minimal —
+// a damp is a pure "stop sounding" signal, not a new strike, so it doesn't
 // need peak/dynamic info. The timestamp is kept for future latency
 // diagnostics symmetry with RingEvent, even though nothing consumes it yet.
 typedef struct __attribute__((packed)) {
   uint32_t timestampMs;
-} MuteEvent;
+} DampEvent;
 
 // Must match BatteryState in BatteryStatus.kt on the Android side.
 enum BatteryState : uint8_t {
@@ -501,11 +542,12 @@ void setup() {
   Serial.println("not Z. Then swing forward and confirm vFwd goes POSITIVE.");
   Serial.println("See the notes above CALIBRATION_MODE in this sketch.\n");
 #elif CALIBRATION_MODE == 2
-  Serial.println("\n*** CALIBRATION MODE 2 (swing trace) — rings/mutes still fire. ***");
-  Serial.println("Traces while moving. Ring and mute normally a few times, then try");
+  Serial.println("\n*** CALIBRATION MODE 2 (swing trace) — rings/damps still fire. ***");
+  Serial.println("Traces while moving. Ring and damp normally a few times, then try");
   Serial.println("things that should NOT trigger either (pick up, tap handle, slow");
-  Serial.println("tilt either way) and compare peakV against SWING_ARM_VELOCITY /");
-  Serial.println("MUTE_ARM_VELOCITY.\n");
+  Serial.println("tilt) and compare: peakV vs SWING_ARM_VELOCITY/DAMP_ARM_SPEED,");
+  Serial.println("decel vs DAMP_STOP_DECEL_THRESHOLD, and cosFwd vs");
+  Serial.println("DAMP_EXCLUSION_COS (should be ~1.0 ringing, well under it damping).\n");
 #endif
 
   // --- BLE (NimBLE) ---
@@ -526,8 +568,8 @@ void setup() {
       BLE_CHAR_TIME_UUID,
       NIMBLE_PROPERTY::READ);
   timeCharacteristic->setCallbacks(new TimeCharacteristicCallbacks());
-  muteCharacteristic = service->createCharacteristic(
-      BLE_CHAR_MUTE_UUID,
+  dampCharacteristic = service->createCharacteristic(
+      BLE_CHAR_DAMP_UUID,
       NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
   service->start();
 
@@ -578,17 +620,19 @@ void emitRing(unsigned long nowMs) {
 }
 
 // ---------------------------------------------------------------------------
-// MUTE EMISSION — see SUSTAIN AND MUTE in the header comment
+// DAMP EMISSION — see SUSTAIN AND DAMP in the header comment
 // ---------------------------------------------------------------------------
-void emitMute(unsigned long nowMs) {
-  MuteEvent evt;
+void emitDamp(unsigned long nowMs, float decelAlongTravel) {
+  DampEvent evt;
   evt.timestampMs = nowMs;
 
-  Serial.printf("MUTE  swing=%.2fm/s\n", peakSwingVelocity);
+  Serial.printf("DAMP  speed=%.2fm/s  decel=%.1fm/s^2  dir=[%.2f %.2f %.2f]\n",
+                peakSwingVelocity, decelAlongTravel,
+                travelDirX, travelDirY, travelDirZ);
 
-  if (bleClientConnected && muteCharacteristic) {
-    muteCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
-    muteCharacteristic->notify();
+  if (bleClientConnected && dampCharacteristic) {
+    dampCharacteristic->setValue((uint8_t*)&evt, sizeof(evt));
+    dampCharacteristic->notify();
   }
 }
 
@@ -635,22 +679,44 @@ void loop() {
                                  : FORWARD_AXIS == AXIS_Y ? linY
                                                           : linZ);
 
-  // --- Integrate to forward velocity (leaky, so bias can't accumulate) -----
-  forwardVelocity = forwardVelocity * VELOCITY_DECAY + aForward * dt;
+  // --- Integrate to a 3D velocity vector (leaky, so bias can't accumulate) --
+  velX = velX * VELOCITY_DECAY + linX * dt;
+  velY = velY * VELOCITY_DECAY + linY * dt;
+  velZ = velZ * VELOCITY_DECAY + linZ * dt;
 
   // When the bell is genuinely still, zero the integrator outright.
   if (linMag < REST_ACCEL_THRESHOLD) {
     if (restSamples < REST_SAMPLES_REQUIRED) {
       restSamples++;
     } else {
-      forwardVelocity = 0.0f;
+      velX = velY = velZ = 0.0f;
     }
   } else {
     restSamples = 0;
   }
 
+  // Forward component drives ring detection; the full magnitude drives damp.
+  // Deriving forwardVelocity from the vector is equivalent to the old
+  // single-axis integration (FORWARD_SIGN is constant), so ring behavior is
+  // unchanged by the move to 3D.
+  float forwardVelocity = FORWARD_SIGN * (FORWARD_AXIS == AXIS_X ? velX
+                                        : FORWARD_AXIS == AXIS_Y ? velY
+                                                                 : velZ);
+  float speed = sqrtf(velX * velX + velY * velY + velZ * velZ);
+
+  // Capture the direction of travel at the fastest point of the gesture, and
+  // measure deceleration along it. This is what makes damp orientation-blind.
+  if (speed > peakSwingVelocity) {
+    peakSwingVelocity = speed;
+    if (speed > 1e-6f) {
+      travelDirX = velX / speed;
+      travelDirY = velY / speed;
+      travelDirZ = velZ / speed;
+    }
+  }
+  float decelAlongTravel = -(linX * travelDirX + linY * travelDirY + linZ * travelDirZ);
+
   if (linMag > peakLinearAccel) peakLinearAccel = linMag;
-  if (fabsf(forwardVelocity) > peakSwingVelocity) peakSwingVelocity = fabsf(forwardVelocity);
 
 #if CALIBRATION_MODE == 1
   static unsigned long lastCalPrintMs = 0;
@@ -668,25 +734,34 @@ void loop() {
     static unsigned long lastTracePrintMs = 0;
     if (linMag >= REST_ACCEL_THRESHOLD && nowMs - lastTracePrintMs >= 20) {
       lastTracePrintMs = nowMs;
-      Serial.printf("aFwd=%7.2f  vFwd=%6.2f  peakV=%6.2f  state=%s\n",
-                    aForward, forwardVelocity, peakSwingVelocity,
-                    ringState == RING_IDLE           ? "idle"
-                    : ringState == RING_ARMED_FORWARD  ? "ARMED-fwd"
-                    : ringState == RING_ARMED_BACKWARD ? "ARMED-bwd"
-                                                       : "settling");
+      // cosFwd is the discriminator between the two gestures: ~1.0 is straight
+      // forward (ring territory), below DAMP_EXCLUSION_COS is damp-eligible.
+      float cosFwd = (speed > 1e-6f) ? (forwardVelocity / speed) : 0.0f;
+      Serial.printf("aFwd=%7.2f  vFwd=%6.2f  speed=%5.2f  cosFwd=%5.2f  decel=%6.1f  peakV=%5.2f  state=%s\n",
+                    aForward, forwardVelocity, speed, cosFwd,
+                    decelAlongTravel, peakSwingVelocity,
+                    ringState == RING_IDLE          ? "idle"
+                    : ringState == RING_ARMED_FORWARD ? "ARMED-ring"
+                    : ringState == RING_ARMED_DAMP    ? "ARMED-damp"
+                                                      : "settling");
     }
   }
 #endif
   // --- Swing / stop state machine ------------------------------------------
   switch (ringState) {
     case RING_IDLE:
-      // Arm only once the bell is genuinely travelling with real intent, in
-      // either direction. A tap on the handle spikes acceleration but nets
-      // ~zero velocity, so it stops here regardless of direction.
+      // A tap on the handle spikes acceleration but nets ~zero velocity, so it
+      // fails both arming tests below regardless of direction.
       if (forwardVelocity >= SWING_ARM_VELOCITY) {
+        // Ring: directional, forward only. Checked FIRST so a forward swing
+        // always claims the gesture.
         ringState = RING_ARMED_FORWARD;
-      } else if (forwardVelocity <= -MUTE_ARM_VELOCITY) {
-        ringState = RING_ARMED_BACKWARD;
+      } else if (speed >= DAMP_ARM_SPEED &&
+                 (forwardVelocity / speed) < DAMP_EXCLUSION_COS) {
+        // Damp: any direction outside the forward exclusion cone. The speed
+        // test above guarantees speed is well clear of zero, so the division
+        // is safe. See SUSTAIN AND DAMP in the header.
+        ringState = RING_ARMED_DAMP;
       }
       break;
 
@@ -705,15 +780,15 @@ void loop() {
       }
       break;
 
-    case RING_ARMED_BACKWARD:
-      if (aForward >= MUTE_STOP_DECEL_THRESHOLD) {
-        // Sharp deceleration opposing the backward motion: the bell has been
-        // pressed to a stop, same as touching the casting on a real handbell.
-        emitMute(nowMs);
+    case RING_ARMED_DAMP:
+      if (decelAlongTravel >= DAMP_STOP_DECEL_THRESHOLD) {
+        // Sharp deceleration opposing the direction of travel, whatever that
+        // direction was: the casting has contacted something and stopped.
+        emitDamp(nowMs, decelAlongTravel);
         ringState = RING_SETTLING;
         settleUntilMs = nowMs + REFRACTORY_MS;
-      } else if (forwardVelocity > -RELEASE_VELOCITY) {
-        // Backward motion petered out without a definite stop — no mute.
+      } else if (speed < RELEASE_VELOCITY) {
+        // Motion petered out without a definite stop — no damp.
         ringState = RING_IDLE;
         peakLinearAccel = 0;
         peakSwingVelocity = 0;
@@ -721,9 +796,11 @@ void loop() {
       break;
 
     case RING_SETTLING:
-      // Require BOTH the settle window to expire and the swing to actually
-      // die down, so one vigorous motion can't produce a burst of events.
-      if (nowMs >= settleUntilMs && fabsf(forwardVelocity) < RELEASE_VELOCITY) {
+      // Require BOTH the settle window to expire and the motion to actually
+      // die down, so one vigorous gesture can't produce a burst of events.
+      // Uses full speed rather than the forward component, so a gesture that
+      // ends up travelling sideways still has to settle before re-arming.
+      if (nowMs >= settleUntilMs && speed < RELEASE_VELOCITY) {
         ringState = RING_IDLE;
         peakLinearAccel = 0;
         peakSwingVelocity = 0;

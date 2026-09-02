@@ -49,19 +49,31 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   timbre difference — and widened the volume spread to ~22dB pp-to-ff.
   (Known open issue: dynamic level still varies noticeably between rings
   that feel identical by hand — see `firmware/README.md`'s tuning-TODO list.)
-- Sustain and mute: tones now ring out for several seconds with a natural
-  decay (longer for louder dynamics) instead of a ~1s fixed blip, and a new
-  **mute** gesture — swing the bell backward toward the body, then stop it,
-  the mirror image of ring detection — cuts the tone short, modeling how a
-  real handbell is damped by pressing it to the chest/shoulder. New
-  `BLE_CHAR_MUTE_UUID` characteristic; ring/mute detection now share one
-  state machine (`RING_IDLE`/`RING_ARMED_FORWARD`/`RING_ARMED_BACKWARD`/
-  `RING_SETTLING`) since a swing can't be armed in both directions at once.
-  The bell is treated as physically monophonic on the Android side — a new
-  ring replaces whatever's currently sounding rather than layering. Also
-  fixed a latent bug found while extending this: the old peak-velocity
-  tracker only ever recorded positive (forward) values, so it read ~0 during
-  a backward swing.
+- Sustain and damp: tones now ring out for several seconds with a natural
+  decay (longer for louder dynamics) instead of a ~1s fixed blip, and a
+  **damp** gesture cuts the tone short, modeling how a real handbell is
+  stopped by pressing it to the chest/shoulder. New `BLE_CHAR_DAMP_UUID`
+  characteristic; ring and damp share one state machine (`RING_IDLE`/
+  `RING_ARMED_FORWARD`/`RING_ARMED_DAMP`/`RING_SETTLING`). The bell is
+  treated as physically monophonic on the Android side — a new ring replaces
+  whatever's currently sounding rather than layering. Also fixed a latent
+  bug found while extending this: the old peak-velocity tracker only ever
+  recorded positive (forward) values, so it read ~0 during a backward swing.
+- Damp detection made omnidirectional. It was first implemented as the
+  mirror image of ring detection (backward motion along the forward axis),
+  which forced the ringer to rotate the bell in-hand to damp it — arm
+  geometry means the bell actually comes back to the body around 45° off the
+  ring plane. Damp now integrates the **full 3D velocity vector**, arms on
+  speed in any direction outside a forward exclusion cone
+  (`DAMP_EXCLUSION_COS`, default 45°), and fires on deceleration measured
+  along the direction of travel rather than any fixed axis. Ring detection
+  stays single-axis and directional, as the clapper physics require — the
+  exclusion cone is what keeps a forward swing from damping its own tone.
+- Manual **Damp** button in the app, for stopping a tone by hand. Acts on
+  the local audio stream, so it works with or without the bell connected.
+- Raised the dynamic volume floor from 0.08 to 0.20 (now ~14dB pp-to-ff
+  instead of ~22dB) — pp was too quiet to hear comfortably. A phone
+  speaker's quiet end has to stay above the room, not just above silence.
 
 ## v0.1 — 2026-08-29
 
