@@ -8,6 +8,7 @@ import android.os.Looper
 import android.util.Log
 import java.io.File
 import java.io.RandomAccessFile
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.exp
@@ -27,10 +28,14 @@ import kotlin.math.sin
  * by the firmware's damp gesture (see BLE_CHAR_DAMP_UUID in
  * feather_transmitter.ino) or by the manual Damp button in the app.
  *
- * All tones are synthesized ONCE up front (one per DynamicLevel) and handed
- * to SoundPool, which is the low-latency-appropriate API for short,
- * frequently-retriggered sound effects on Android. No synthesis or file I/O
- * happens on the ring-event hot path — only soundPool.play().
+ * Tones are synthesized at a chosen HandbellPitch (default A5, 880Hz -- what
+ * this tone was originally tuned to) and handed to SoundPool, which is the
+ * low-latency-appropriate API for short, frequently-retriggered sound
+ * effects on Android. No synthesis or file I/O happens on the ring-event hot
+ * path — only soundPool.play(). setPitch() re-synthesizes all six dynamic
+ * levels at a new frequency on a background thread; the OLD tones stay
+ * playable until the new ones are ready, so a ring mid-change never drops --
+ * it just plays once more at the previous pitch, then switches.
  *
  * NOTE on loudness: the synthesized buffer itself is normalized to the same
  * peak amplitude for every level (see synthesizeBellTone) — that's a
@@ -52,7 +57,6 @@ class RingPlayer(private val context: Context) {
         // time and cache file size -- which matters more now that buffers run
         // several seconds instead of under one.
         const val SAMPLE_RATE = 22050
-        const val BASE_FREQ_HZ = 880.0
 
         // Buffer length. Generous relative to how long the decay actually takes
         // (see BASE_DECAY_RATE below) so every level reaches near-silence well
@@ -98,25 +102,50 @@ class RingPlayer(private val context: Context) {
     @Volatile private var soundIdByLevel: Map<DynamicLevel, Int> = emptyMap()
     @Volatile private var ready = false
 
+    // Guards against a rapid string of pitch changes racing each other: only
+    // the synthesis pass that's still current when it finishes gets applied.
+    private val pitchGeneration = AtomicInteger(0)
+
     // The bell is physically monophonic -- only one casting, one vibration
     // state -- so a new ring replaces whatever's currently sounding rather
     // than layering another independent voice on top of it.
     @Volatile private var activeStreamId: Int? = null
     @Volatile private var activeVolume: Float = 0f
 
-    /** Synthesizes and loads one tone per DynamicLevel. Call once, off the main thread is
-     *  fine (this constructor kicks off a background thread itself). */
-    fun prepare() {
+    /** Synthesizes and loads one tone per DynamicLevel at the given pitch. Call once,
+     *  off the main thread is fine (this kicks off a background thread itself). */
+    fun prepare(pitch: HandbellPitch = HandbellPitches.DEFAULT) {
+        synthesizeAllAsync(pitch.frequencyHz)
+    }
+
+    /** Re-synthesizes all six tones at a new pitch, on a background thread. Safe to call
+     *  repeatedly in quick succession -- only the last call's result gets applied. */
+    fun setPitch(pitch: HandbellPitch) {
+        synthesizeAllAsync(pitch.frequencyHz)
+    }
+
+    private fun synthesizeAllAsync(baseFreqHz: Double) {
+        val generation = pitchGeneration.incrementAndGet()
         Thread({
             val ids = DynamicLevel.entries.associateWith { level ->
-                val samples = synthesizeBellTone(level.representativePeakG)
+                val samples = synthesizeBellTone(level.representativePeakG.toDouble(), baseFreqHz)
                 val file = File.createTempFile("bell_tone_", ".wav", context.cacheDir)
                 writeWavFile(file, samples, SAMPLE_RATE)
                 soundPool.load(file.absolutePath, 1)
             }
-            soundIdByLevel = ids
-            ready = true
-            Log.i(TAG, "Loaded ${ids.size} tone variants.")
+            if (generation == pitchGeneration.get()) {
+                // Still current. Swap in the new tones and drop the old ones --
+                // but only now, so play() always has a usable set.
+                val old = soundIdByLevel
+                soundIdByLevel = ids
+                ready = true
+                old.values.forEach { soundPool.unload(it) }
+                Log.i(TAG, "Loaded ${ids.size} tone variants at ${baseFreqHz}Hz.")
+            } else {
+                // Superseded by a newer pitch change before this one finished --
+                // discard rather than swap in stale tones.
+                ids.values.forEach { soundPool.unload(it) }
+            }
         }, "RingPlayer-prepare").start()
     }
 
@@ -171,7 +200,7 @@ class RingPlayer(private val context: Context) {
 
     /** Same shape as bell_tone() in pc_ble_listener.py: a decaying sine + two harmonics,
      *  extended with a much longer natural decay -- see the constants above. */
-    private fun synthesizeBellTone(peakG: Double): ShortArray {
+    private fun synthesizeBellTone(peakG: Double, baseFreqHz: Double): ShortArray {
         val n = (SAMPLE_RATE * DURATION_S).toInt()
         val strength = min(1.0, max(0.15, (peakG - 1.0) / 5.0))
         val decayRate = BASE_DECAY_RATE + DECAY_RATE_SPREAD * (1 - strength)
@@ -180,9 +209,9 @@ class RingPlayer(private val context: Context) {
         for (i in 0 until n) {
             val t = i.toDouble() / SAMPLE_RATE
             val envelope = exp(-t * decayRate)
-            var s = 1.00 * sin(2 * PI * BASE_FREQ_HZ * t) +
-                0.35 * strength * sin(2 * PI * BASE_FREQ_HZ * 2.4 * t) +
-                0.15 * strength * sin(2 * PI * BASE_FREQ_HZ * 4.1 * t)
+            var s = 1.00 * sin(2 * PI * baseFreqHz * t) +
+                0.35 * strength * sin(2 * PI * baseFreqHz * 2.4 * t) +
+                0.15 * strength * sin(2 * PI * baseFreqHz * 4.1 * t)
             s *= envelope * strength
             raw[i] = s
             maxAbs = max(maxAbs, abs(s))
@@ -204,8 +233,6 @@ class RingPlayer(private val context: Context) {
         }
         return out
     }
-
-    private fun synthesizeBellTone(peakG: Float): ShortArray = synthesizeBellTone(peakG.toDouble())
 
     /** Minimal 16-bit mono PCM WAV writer — no external deps needed. */
     private fun writeWavFile(file: File, samples: ShortArray, sampleRate: Int) {

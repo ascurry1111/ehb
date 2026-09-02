@@ -112,6 +112,14 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
 - Raised the dynamic volume floor from 0.08 to 0.20 (now ~14dB pp-to-ff
   instead of ~22dB) — pp was too quiet to hear comfortably. A phone
   speaker's quiet end has to stay above the room, not just above silence.
+- Pitch selection. New `HandbellPitch.kt` covers the standard chromatic range
+  of a 5-octave handbell set (C3–C8, 61 pitches, flat spellings per handbell
+  convention). A dropdown near the top of the app picks the pitch, defaulting
+  to `A5` (880Hz, what the tone was already tuned to) and persisting the
+  choice across restarts. `RingPlayer` re-synthesizes all six dynamic levels
+  at the new frequency on a background thread; the previous pitch's tones
+  stay playable until the new ones are ready (generation-counter guarded
+  against rapid changes racing each other), so a ring mid-change never drops.
 
 ## v0.1 — 2026-08-29
 

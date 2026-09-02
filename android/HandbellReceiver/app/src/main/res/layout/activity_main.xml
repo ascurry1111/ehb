@@ -17,6 +17,32 @@
         android:textSize="11sp"
         android:alpha="0.7" />
 
+    <!-- Pitch is a set-once-per-demo control, not something touched mid-ring, so it
+         gets its own small row rather than living in the hero block below. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingTop="4dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Pitch"
+            android:textColor="#888888"
+            android:textSize="13sp" />
+
+        <Spinner
+            android:id="@+id/spinnerPitch"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:minWidth="96dp"
+            android:popupBackground="#1B1B1B" />
+
+    </LinearLayout>
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

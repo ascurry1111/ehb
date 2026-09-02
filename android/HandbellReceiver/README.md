@@ -17,7 +17,7 @@ specifically for a live demo on a OnePlus 15 Pro (Android 12+) — see
    `SoundPool.play()`), picking both tone and volume from the six musical
    dynamic levels (pp–ff) in [`DynamicLevel.kt`](app/src/main/java/com/ehb/handbell/DynamicLevel.kt).
    The tone is a several-second natural decay, not a short blip — see
-   "Sustain and damp" below.
+   "Sustain and damp" below. Pitch is selectable — see "Pitch selection".
 4. Auto-reconnects if the connection drops, so the demo can survive walking
    out of range briefly.
 5. Separately (and at low priority — see the firmware header comment),
@@ -164,3 +164,24 @@ To retune:
   entries directly (they're literals, not computed, so just edit them).
 - **Tone shape** — `synthesizeBellTone()` in `RingPlayer.kt`, driven by
   `representativePeakG` per level.
+
+## Pitch selection
+
+The **Pitch** dropdown near the top of the screen picks which note the bell
+tone is synthesized at, from the standard chromatic range of a 5-octave
+handbell choir set — C3 to C8, 61 pitches, spelled with flats (`Bb4`, not
+`A#4`) per handbell convention. See
+[`HandbellPitch.kt`](app/src/main/java/com/ehb/handbell/HandbellPitch.kt) for
+the full list and the equal-temperament frequency math (A4 = 440Hz). Defaults
+to `A5` (880Hz) — what the tone was originally tuned to — and remembers your
+last choice across restarts (`SharedPreferences`, not tied to any particular
+bell).
+
+Changing pitch re-synthesizes all six dynamic-level tones at the new
+frequency on a background thread (~1s). The previous pitch's tones stay
+playable until the new ones are ready, so **a ring mid-change never drops
+silently** — worst case it plays once more at the old pitch, then the next
+one is at the new pitch. Rapid changes are also safe: `RingPlayer` tracks a
+generation counter and only the last selection's synthesis result gets
+applied, so flicking through several pitches quickly can't leave a stale one
+half-applied.

@@ -7,9 +7,11 @@ import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
+import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ListView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -24,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvBattery: TextView
     private lateinit var tvClearLog: TextView
     private lateinit var btnDamp: Button
+    private lateinit var spinnerPitch: Spinner
     private lateinit var lvRingLog: ListView
     private lateinit var rootView: android.view.View
 
@@ -51,6 +54,8 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val MAX_LOG_ENTRIES = 200
+        const val PREFS_NAME = "handbell_prefs"
+        const val KEY_PITCH_NAME = "pitch_name"
     }
 
     private val requestPermissions =
@@ -79,6 +84,7 @@ class MainActivity : AppCompatActivity() {
         tvBattery = findViewById(R.id.tvBattery)
         tvClearLog = findViewById(R.id.tvClearLog)
         btnDamp = findViewById(R.id.btnDamp)
+        spinnerPitch = findViewById(R.id.spinnerPitch)
         lvRingLog = findViewById(R.id.lvRingLog)
 
         ringLogAdapter = ArrayAdapter(this, R.layout.item_ring_log, R.id.tvRingLogItem, mutableListOf<String>())
@@ -99,12 +105,41 @@ class MainActivity : AppCompatActivity() {
         // audio stream, not on the bell.
         btnDamp.setOnClickListener { ringPlayer.damp() }
 
+        val savedPitch = HandbellPitches.byName(
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_PITCH_NAME, null) ?: ""
+        ) ?: HandbellPitches.DEFAULT
+
         ringPlayer = RingPlayer(this)
-        ringPlayer.prepare()
+        ringPlayer.prepare(savedPitch)
+        setUpPitchSpinner(savedPitch)
 
         requestPermissions.launch(
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
         )
+    }
+
+    private fun setUpPitchSpinner(initialPitch: HandbellPitch) {
+        val pitchNames = HandbellPitches.ALL.map { it.name }
+        val adapter = ArrayAdapter(this, R.layout.item_pitch_spinner, R.id.tvPitchItem, pitchNames)
+        adapter.setDropDownViewResource(R.layout.item_pitch_spinner)
+        spinnerPitch.adapter = adapter
+        spinnerPitch.setSelection(HandbellPitches.ALL.indexOf(initialPitch))
+
+        // Attach the listener only after the initial selection above has taken
+        // effect, so restoring the saved/default pitch on launch doesn't trigger
+        // a redundant re-synthesis of the tones prepare() just started building.
+        spinnerPitch.post {
+            spinnerPitch.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    val pitch = HandbellPitches.ALL[position]
+                    ringPlayer.setPitch(pitch)
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putString(KEY_PITCH_NAME, pitch.name)
+                        .apply()
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) {}
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
