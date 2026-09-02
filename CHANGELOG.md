@@ -69,6 +69,25 @@ Live-demo path: Android phone as receiver, BLE-only, tuned for low latency.
   along the direction of travel rather than any fixed axis. Ring detection
   stays single-axis and directional, as the clapper physics require — the
   exclusion cone is what keeps a forward swing from damping its own tone.
+- Fixed ring/damp detection dropping ~60% of gestures (regression from the
+  omnidirectional damp change above). Two structural bugs:
+  1. **Arming race.** Ring and damp each had their own armed state, entered
+     on their own threshold. But `speed >= |forwardVelocity|` by definition,
+     so on a forward swing the damp threshold was always crossed first, and
+     a real swing's arc wanders in and out of any forward cone — so the damp
+     state routinely stole ring gestures, which then landed as silent damps.
+     Tuning the cone only traded ring misses for damp misses. Now there is
+     ONE armed state and the gesture is classified **at the stop**, from the
+     peak forward velocity over the whole motion, which separates the two
+     cleanly.
+  2. **Settle deadlock.** Settling waited for the bell to come to rest, but
+     ringing and then damping is one continuous motion — the bell never
+     stops in between — so the detector sat in settling right through the
+     damp. It now waits only for the refractory window and the deceleration
+     spike to pass.
+  Also added `POST_RING_DAMP_LOCKOUT_MS`, needed by the new design: the
+  strike's recoil is real motion ending in a real deceleration, and would
+  otherwise read as a damp and kill the tone it just started.
 - Manual **Damp** button in the app, for stopping a tone by hand. Acts on
   the local audio stream, so it works with or without the bell connected.
 - Raised the dynamic volume floor from 0.08 to 0.20 (now ~14dB pp-to-ff

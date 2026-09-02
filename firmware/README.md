@@ -60,14 +60,21 @@ multi-second decaying tone per ring rather than a short blip, and **damp** is
 the gesture that cuts it short.
 
 **Ring and damp are deliberately not symmetric.** A ring is directional — the
-clapper only travels fore/aft and is sprung against striking backward — so it
-stays a single-axis test on forward velocity. A damp is *omnidirectional*:
-physically it's just "the casting contacted something," and in practice arm
-geometry means the bell usually comes back to the body around 45° off the
-ring plane, laterally. So damp detection works on the **full 3D velocity
-vector**, arming on speed in any direction outside a forward exclusion cone
-and firing on deceleration measured *along the direction of travel* rather
-than any fixed axis. See `SUSTAIN AND DAMP` in the sketch's header comment.
+clapper only travels fore/aft and is sprung against striking backward. A damp
+is *omnidirectional*: physically it's just "the casting contacted something,"
+and in practice arm geometry means the bell usually comes back to the body
+around 45° off the ring plane, laterally. So the stop is detected on the
+**full 3D velocity vector**, as a deceleration measured *along the direction
+of travel* rather than along any fixed axis.
+
+**Both gestures share one armed state, and which one a motion was is decided
+at the stop** — from the peak forward velocity accumulated over the whole
+gesture — not when it arms. An earlier version armed each gesture separately
+and that could not work: `speed >= |forwardVelocity|` by definition, so on a
+forward swing the damp arm always tripped first and stole a large share of
+rings, which then landed as silent damps. See `DECIDE AT THE STOP` in the
+sketch's header comment for the full write-up; it's the kind of mistake worth
+not repeating.
 
 ### Mounting orientation
 
@@ -91,35 +98,36 @@ reflash, open Serial Monitor at 115200:
 
 ### Then: tune the thresholds
 
-These interact, so change one at a time and watch the `RING #n peak=..g
-swing=..m/s` / `DAMP speed=..m/s decel=..` lines while ringing and damping by
-hand:
+Every ring and damp prints `peakFwd=` and `peakSpd=`. Ring and damp several
+times each and compare those numbers — that's the fastest way to see whether
+the thresholds sit in the right place.
 
-- `SWING_ARM_VELOCITY` (m/s) — how fast the bell must actually be travelling
-  forward before a stop can ring it. **Raise it** if handling still rings the
-  bell; **lower it** if genuine swings are missed. Compare against the
-  `swing=` figure printed on each ring.
-- `STOP_DECEL_THRESHOLD` (m/s²) — how abruptly the bell must stop to ring.
-  **Raise it** if soft stops ring; **lower it** if you have to stop the bell
-  unnaturally hard.
-- `DAMP_ARM_SPEED` (m/s) — how fast the bell must be travelling **in any
-  direction** before a stop can damp it. Compare against the `speed=` figure
-  in the `CALIBRATION_MODE 2` trace.
-- `DAMP_STOP_DECEL_THRESHOLD` (m/s²) — how abruptly the bell must stop to
-  damp, measured along its direction of travel. Defaults slightly below
-  `STOP_DECEL_THRESHOLD`, since contacting a soft body is less abrupt than
-  the deliberate stop that rings the bell, and a missed damp is much less
-  disruptive than a missed ring. Compare against the trace's `decel=`.
-- `DAMP_EXCLUSION_COS` — **the only thing separating the two gestures.** It's
-  the cosine of a cone half-angle around the forward axis; motion inside the
-  cone can't damp. Default `0.707` = 45°. Raise toward 1.0 for a narrower
-  cone (damps trigger more readily, but a slightly-off-axis ring swing risks
-  damping its own tone); lower for a wider cone (ring better protected, but
-  damps that come back near the ring axis get missed). The trace's `cosFwd`
-  shows where each gesture actually falls: ~1.0 when ringing, well below the
-  threshold when damping.
+- **`RING_FORWARD_VELOCITY`** (m/s) — the ring/damp discriminator. At the
+  stop, a gesture whose peak forward velocity reached this is a ring;
+  anything less is a damp. **Lower it** if gestures you meant as rings are
+  landing silently (check whether their `DAMP peakFwd=` sits just under this
+  value — that's the tell). **Raise it** if damps are ringing the bell.
+- **`STOP_DECEL_THRESHOLD`** (m/s²) — how abruptly the bell must stop for
+  *anything* to fire, measured along the direction of travel. **Lower it** if
+  gestures are being missed entirely (nothing at all prints); **raise it** if
+  incidental handling triggers events. One threshold covers both gestures:
+  the stop has to be detected before the gesture can be classified, so it
+  can't depend on which gesture it turns out to be.
+- **`ARM_SPEED`** (m/s) — how fast the bell must move for the detector to
+  start watching at all. Keep it comfortably below `RING_FORWARD_VELOCITY` so
+  every real gesture gets watched early enough for its peaks to be captured.
+- **`POST_RING_DAMP_LOCKOUT_MS`** — suppresses a damp for this long after a
+  ring, so the strike's own recoil can't kill the tone it just started. If
+  rings sometimes cut themselves off, raise it; if quick ring-then-damp
+  phrases feel unresponsive, lower it. Watch for `(recoil suppressed)` in the
+  serial log — that's this guard firing.
 - `RELEASE_VELOCITY` / `REFRACTORY_MS` — shared by both gestures; raise if one
   motion produces a burst of events.
+
+Note that settling deliberately does **not** wait for the bell to come to
+rest, only for the refractory window and the deceleration spike to pass —
+ringing and then damping is one continuous motion, and requiring a full stop
+in between made damps unreliable.
 
 The defaults are reasoned starting points, not measured ones — expect to adjust
 them against your actual bell.
