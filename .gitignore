@@ -16,13 +16,12 @@ build/
 
 # Android / Gradle
 .gradle/
-android/**/build/
-android/**/.cxx/
-android/**/local.properties
+.cxx/
+local.properties
 *.iml
 .idea/
 captures/
-android/**/*.apk
+*.apk
 
 # Python
 __pycache__/
