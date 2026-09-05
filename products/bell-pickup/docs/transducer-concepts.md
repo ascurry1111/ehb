@@ -69,12 +69,14 @@ stack onto the crown. Outside to inside:
 
 ```
         handle              (handle block + handle assembly screw inside)
-        handguard
-        lockwasher, external tooth   \  these set and hold the
-        yoke/handle coupler assembly  }  handle's rotational angle
-        lockwasher, external tooth   /
-        === bell casting ===        (isolation sleeve in the hole)
+        handle block        square hole
+        handguard           square hole
+        lockwasher, external tooth
+        === bell casting ===        (plastic isolation sleeve in the hole)
         yoke                        inside, clamped to the crown
+
+   the square coupler rod runs from the yoke up into the handle block,
+   keys everything against rotation, and never touches the casting
 ```
 
 The **clapper does not hang from the screw.** It rides on a horizontal
@@ -155,9 +157,14 @@ maybe $10-15 per bell whatever we choose, but the sensor multiplies:
 
 | Sensor | Per bell | x37 bells | x61 bells |
 |---|---|---|---|
-| Piezo disc | ~$1 | ~$37 | ~$61 |
+| Piezo ring, catalogue part | ~$10 | ~$370 | ~$610 |
 | Eddy-current (LDC1101 + coil) | ~$12 | ~$440 | ~$730 |
 | IIS3DWB accelerometer | ~$20 | ~$740 | ~$1220 |
+
+*Revised: earlier drafts assumed ~$1 for a piezo disc. Thin catalogue rings
+are ~$10 each in twos, so the piezo option is no longer trivially cheap at
+choir scale — though a custom ring from PI Ceramic or CeramTec, sized to the
+handguard, should come well under that in volume.*
 
 The sensor choice roughly doubles total per-bell cost at the top end. It
 doesn't bite for a single prototype, but it should steer the choice now
@@ -188,7 +195,7 @@ inside the cup.
 
 | # | Approach | Senses | Per bell | Effort | Read |
 |---|---|---|---|---|---|
-| A | Piezo on a crown-bolt adapter | Strain | ~$1 | Low | **Try first** |
+| A | Piezo ring in the crown stack | Strain | ~$10 | Low | **Try first** |
 | B | High-bandwidth accel on the same adapter | Acceleration | ~$20 | Medium | Clean, pricey |
 | C | Eddy-current coil on an internal bracket | Displacement | ~$12 | High | Non-contact fallback |
 | D | Passive magnet + coil, internal bracket | Velocity | ~$3 | Low | Cheap long shot |
@@ -308,22 +315,77 @@ becomes necessary, the coupler is fair-game hardware and a replacement with
 a wire bore is the route. Custom machined part, so it is a last resort, not
 a plan.
 
-**Front end.** Piezo output is large — tens of mV to several volts — and
-needs a **high impedance load**. Source capacitance is ~15-20 nF; into
-1 Mohm the low corner is ~8 Hz, but into a typical 10-50 kohm line input
-the corner lands in the hundreds of Hz and the result sounds thin and
-clacky. This is the single most common reason DIY piezo pickups sound bad.
-Use a non-inverting unity-gain buffer (TL071, OPA1642, or a 2N5457 JFET
-follower) with ~10 Mohm to ground, a 1 Mohm series resistor, and
-back-to-back clamp diodes to the rails — a hard strike can produce tens of
-volts.
+### Sourcing the ring
+
+0.3 mm rings are available off the shelf. **Steminc** is the practical
+supplier — 2-piece sets, no minimum order, sells to individuals.
+
+| Part | OD | Bore | Thick | Price /2 |
+|---|---|---|---|---|
+| **SMR3021T03412** | 30 mm | **21 mm** | **0.3 mm** | $19.98 |
+| SMR3021T03311 | 30 mm | 21 mm | 0.3 mm | $34.29 |
+| SMR28D9T03111 | 28 mm | 9 mm | 0.3 mm | $16.02 |
+| SMR28D9T03NEN111 | 28 mm | 9 mm | 0.3 mm | $9.52 |
+| SMR1585T07111 | 15 mm | 8.5 mm | 0.7 mm | $19.67 |
+
+Listing: <https://www.steminc.com/PZT/EN/producttag/2/piezo-ring>
+
+**Start with SMR3021T03412** — 0.3 mm thick with a 21 mm bore that clears
+any plausible square-rod diagonal. The 28x9 parts are cheaper but their
+9 mm bore only works if the coupler is ~6 mm across the flats or less.
+Measure the rod's *diagonal* before ordering, and check the handguard face
+diameter — 30 mm OD may be too large on a high bell.
+
+For production quantities, PI Ceramic
+(<https://www.pi-usa.us/en/products/piezo-transducers-sensing-ultrasound/piezoelectric-ceramic-rings>)
+and CeramTec (<https://www.ceramtec-industrial.com/en/piezo-designs/rings>)
+do custom ring geometries matched to the actual handguard.
+
+**Alternatives if the geometry doesn't work:**
+
+- **Piezo plates** (<https://www.steminc.com/PZT/en/piezo-plate>) — three
+  small thin plates at 120 degrees around the rod instead of a ring.
+  Sidesteps both bore and OD limits.
+- **PVDF film** (<https://www.te.com/en/product-CAT-PFS0003.html>) — 28 um,
+  essentially free on thickness. But it **creeps under sustained
+  compression**, and 14 um of relaxation is comparable to a short bolt's
+  entire elastic stretch. Fine for a bench test where you re-torque each
+  time; not for a product that has to stay tight.
+
+### Front end — use a charge amplifier, not a voltage buffer
+
+Piezo *charge* output is independent of thickness. *Voltage* is not:
+`V = d33 * F * t / (eps * A)`. Thin and wide is the worst case. The
+30x21x0.3 ring gives roughly **13x less voltage** than a 12x5x1 ring under
+the same force — most of the signal traded away to get the thickness down.
+
+So stop reading voltage. Use a **charge amplifier**: inverting FET-input
+op-amp with a feedback capacitor, `V = -Q / Cf`. Output becomes independent
+of the ring's capacitance, area, thickness *and* the cable capacitance.
+About 1 nF feedback with a 100 Mohm bleed resistor puts the low corner near
+1.6 Hz.
+
+This supersedes the voltage-follower front end described in earlier
+revisions of this doc — correct for a thick disc, wrong for a thin wide
+ring.
+
+**Two build details that otherwise cost a build cycle:**
+
+- **The ring will be shorted out.** Silver electrodes on both faces, and in
+  this stack both faces contact metal that is all electrically common
+  through the coupler and screw. Needs a thin insulator on one face —
+  25 um Kapton — plus a foil tab to pick off the signal. Adds ~50 um.
+- **0.3 mm ceramic at 30 mm diameter is fragile.** It cracks on any
+  bending. Flat parallel shims either side, moderate torque, and buy
+  spares.
 
 **Weaknesses.** The crown is node-adjacent, so the spectral balance will be
 skewed relative to what the bell actually sounds like. The washer plus its
 clamp has its own mechanical resonance. Bolt torque will matter a lot and
 is worth treating as a variable, not a fixed choice.
 
-The only option that stays trivial at 61 bells.
+Still the cheapest option at choir scale, and the only one with a credible
+route to lower unit cost via a custom ring sized to the handguard.
 
 ### B — High-bandwidth MEMS accelerometer, same adapter
 
@@ -435,7 +497,7 @@ is answered far faster with a laptop.
 ### Experiment 1 — is the crown good enough? (~$15, one evening)
 
 This is the fork the whole project hangs on. If the crown signal is usable,
-this is a $1-per-bell problem with a trivial, fully removable mount. If it
+this is a cheap problem with a trivial, fully removable mount. If it
 isn't, everything moves to an internal bracket and a non-contact sensor.
 
 **Use a high bell, not a low one.** Low bells are the best case on both
@@ -451,7 +513,7 @@ sensitivity in the hand peaks around 200-300 Hz and falls off steeply above
 says nothing about the 4x partial or the strike transient — and plastic
 damping does its worst exactly up there, above where the hand can report.
 
-1. Piezo ring + TL071 buffer (10 Mohm in, 1 Mohm series, clamp diodes),
+1. Piezo ring + charge amp (1 nF feedback, 100 Mohm bleed, FET-input),
    fitted at position 3. Fit one at position 1 as well and compare.
 2. Record into a laptop line input or USB interface. **Simultaneously
    record the same strikes with a reference microphone a metre away.**
