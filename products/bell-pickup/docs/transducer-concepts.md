@@ -200,17 +200,19 @@ thin ring added to it; the electronics live on the handle, because the main
 assembly screw is too short to carry a pod in the stack.
 
 ```
-        main assembly screw
+        main assembly screw   threads into the coupler
              |
-        [   pod    ]      NEW - straps to the handle, not the stack
-        [  handle  ]      existing
-        [handguard ]      existing
-        [ piezo ring ]    NEW - the sensing element, above the teeth
-        [ lockwasher ] \
-        [  coupler   ]  }  existing - sets handle angle, never split
-        [ lockwasher ] /
+        [    pod     ]    NEW - in the handle's open space
+        [   handle   ]    existing
+        [handle block]    existing, square hole
+        [ piezo ring ]    NEW - position 3, the sensing element
+        [ handguard  ]    existing, square hole
+        [ lockwasher ]    existing
         === casting ===   nothing new touches it
-        [   yoke    ]     existing, inside; carries the clapper shaft
+        [    yoke    ]    existing, inside; carries the clapper shaft
+
+        the square coupler rod runs from the yoke all the way up
+        into the handle block, and never touches the casting
 ```
 
 Fit: unscrew the handle, add the ring, refit. Removal reverses it. Nothing
@@ -235,29 +237,76 @@ rigidly coupled, mounted near the base of the handle close to the handle
 block. Out on the loop it becomes a spring-mass system with its own
 resonance, and you end up measuring the pod rather than the bell.
 
-**Placement rules**, from Malmark's construction drawing:
+### How the joint actually clamps
 
-- Lower in the stack means more mass above, means more output — so go as
-  low as the following two rules allow.
-- **Never inside the toothed interface.** The external-tooth lockwashers
-  and the coupler set and hold the handle's rotational angle. A smooth
-  ceramic ring in there lets the handle rotate.
+Confirmed from the bell, not the drawing:
+
+- The **yoke/handle coupler is a square metal rod**. It rises from the yoke
+  inside the bell, through the casting, through the handguard, and into the
+  handle block. The handguard and handle block have **square holes**, so
+  the rod is what prevents rotation.
+- The **main assembly screw threads directly into the coupler** and holds
+  the whole assembly together.
+- The **isolation sleeve is plastic**, and **the coupler never touches the
+  casting.**
+
+So the bronze is clamped between the **yoke** on the inside and the
+**handguard/lockwasher** on the outside. Those two faces are the only
+places vibration crosses from bell into hardware.
+
+This corrects an earlier rule in this doc: the lockwashers are ordinary
+lockwashers, *not* an indexing feature — the square rod does that. Nothing
+in the stack has to transmit torque, so the ring only needs a bore that
+clears the rod's **diagonal** (round-bore rings are fine).
+
+### Where the ring goes
+
+Three candidate positions:
+
+| # | Position | Load path | Wiring |
+|---|---|---|---|
+| 1 | Under the screw head | Bolt tension — via yoke and coupler | Easy, inside the handle |
+| 2 | Below the handguard | Clamped stack — via the outer face | Must exit at the handguard rim |
+| 3 | **Above the handguard** | Clamped stack — via the outer face | Easy, inside the handle |
+
+**Position 3 dominates position 2.** Same load path, same outer-face
+interface, and the only mass difference is the handguard — a thin disc. But
+the wire exits on the handle side instead of at the rim. Take 3 over 2
+regardless of everything else.
+
+**Position 1 is weak on joint mechanics.** A preloaded bolted joint splits
+external dynamic load between the bolt and the clamped members by relative
+stiffness. The members are stiff and take most of it; the bolt is compliant
+and takes a small fraction — typically 10-30%. A ring under the screw head
+measures the *bolt's* share, a 3-5x disadvantage before anything else.
+
+**But which face carries the plastic may invert that.** The outside face is
+the polished, visible one — the one you would protect from a toothed
+lockwasher with a plastic flange. The inside face is hidden and
+cosmetically irrelevant. So it is quite possible that position 1's path
+(casting -> yoke -> coupler -> screw) is the **all-metal** one, while
+positions 2 and 3 sense through a plastic flange. That would trade
+position 1's poor load factor against position 3's damped path, and the
+comparison is genuinely too close to call from the drawing.
+
+**Resolution: fit both and measure.** Rings cost about a dollar and the
+bell is already apart. First look at which of the two clamped faces
+actually has plastic on it — that alone may settle it.
+
+**Other build rules:**
+
 - **Never against a lockwasher.** Piezo ceramic on a tooth cracks. It needs
   a flat shim on each face, which counts against the thickness budget.
 - Budget roughly 1-3 mm for ring plus shims. The main assembly screw is
-  itself fair-game hardware, so a few mm longer is legitimate if the yoke's
-  thread has the depth — the budget may be less fixed than it first looks.
+  itself fair-game hardware, so a few mm longer is legitimate if the
+  coupler's thread has the depth.
 
-**The isolation sleeve is the main risk to this option.** If it only lines
-the hole in the casting, fine. If it also separates the handguard from the
-bronze in the axial load path, the vibration we want is damped and
-low-passed before it ever reaches the ring. Check before building.
-
-**Alternative if the stack proves unworkable:** mount to the **yoke**
-instead, using the bearing screw. Rigid metal, already clamped inside the
-crown, no screw-length budget, unambiguously on the bell side of the
-isolation sleeve, and completely hidden. Needs clearance checking against
-the clapper shaft.
+**Ruled out: mounting inside the bell.** A sensor on the yoke would need
+its pod inside too — too small, too hard to secure — or a wire run out the
+mouth and down the outside, which is not a product. If the yoke ever
+becomes necessary, the coupler is fair-game hardware and a replacement with
+a wire bore is the route. Custom machined part, so it is a last resort, not
+a plan.
 
 **Front end.** Piezo output is large — tens of mV to several volts — and
 needs a **high impedance load**. Source capacitance is ~15-20 nF; into
@@ -389,8 +438,21 @@ This is the fork the whole project hangs on. If the crown signal is usable,
 this is a $1-per-bell problem with a trivial, fully removable mount. If it
 isn't, everything moves to an internal bracket and a non-contact sensor.
 
-1. Piezo disc + TL071 buffer (10 Mohm in, 1 Mohm series, clamp diodes),
-   sandwiched under the handle at the crown bolt.
+**Use a high bell, not a low one.** Low bells are the best case on both
+counts — most energy at the crown, and the lowest frequencies to push
+through a plastic-isolated joint. A C6 or C7 is the design case: its
+partials sit at 4 kHz and 8 kHz and it has far less energy to spare. If it
+works there it works everywhere. Tune the design around a G3 and the
+failure surfaces too late.
+
+Related caveat on the "I can feel it in the handle" evidence: vibrotactile
+sensitivity in the hand peaks around 200-300 Hz and falls off steeply above
+~1 kHz. Feeling a low bell confirms its *fundamental* crosses the joint. It
+says nothing about the 4x partial or the strike transient — and plastic
+damping does its worst exactly up there, above where the hand can report.
+
+1. Piezo ring + TL071 buffer (10 Mohm in, 1 Mohm series, clamp diodes),
+   fitted at position 3. Fit one at position 1 as well and compare.
 2. Record into a laptop line input or USB interface. **Simultaneously
    record the same strikes with a reference microphone a metre away.**
 3. Compare spectra and decay envelopes.
@@ -442,17 +504,13 @@ shouldn't be discovered late.
 construction drawing. Target platform is Malmark. Pod goes on the handle;
 only a thin ring enters the stack.*
 
-0. **Is there polymer in the axial load path?** The isolation sleeve either
-   just lines the hole in the casting, or it also separates the handguard
-   from the bronze. If the latter, option A is sensing through a damped
-   joint and the yoke becomes the primary mount instead. Highest-value
-   30-second check, next time a bell is apart.
-1. **How much spare thread does the main assembly screw have**, and how
-   deep is the yoke's threaded hole? Sets the real thickness budget for
-   ring plus shims.
-2. **Is there clearance on the yoke for a sensor** next to the clapper
-   shaft and bearing block, on the smallest bell in scope?
-3. **Is there a bell available to experiment on freely?** The design needs
+0. **Which clamped face carries the plastic — the yoke side, the handguard
+   side, or both?** This decides whether position 1 or position 3 has the
+   metal path, and it is the one thing that could flip the recommendation.
+   Highest-value 30-second look, next time a bell is apart.
+1. **How much spare thread does the main assembly screw have** in the
+   coupler? Sets the real thickness budget for ring plus shims.
+2. **Is there a bell available to experiment on freely?** The design needs
    repeated fitting and removal.
 4. **How many bells get instrumented in v1?** Prototyping one bell permits
    choices that don't survive to 37 — and the range spans two construction
