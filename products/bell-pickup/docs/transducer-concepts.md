@@ -178,31 +178,69 @@ inside the cup.
 
 ### A — Piezo on a crown-bolt adapter
 
-The product shape the constraints point at: a replacement crown-bolt
-adapter carrying the sensor. Unscrew the handle, drop the adapter in,
-reattach the handle. Fully removable, no trace on the bell, sells as an
-accessory rather than a modified instrument.
+The product shape the constraints point at. The bell's crown is already a
+clamped bolted joint — bolt, handle, casting, clapper. The adapter is one
+more layer in that sandwich: two annular parts that slide onto the existing
+bolt between the handle and the crown.
 
-It is also the best available answer to "must not impede the vibration":
-the crown is near a node, and the handle assembly already puts mass there.
-Mass at the node is the cheapest mass on the instrument.
+```
+        crown bolt        reuse, or swap for a longer one
+             |
+        [  handle  ]      existing, refits on top
+        [   pod    ]      NEW - electronics, and the seismic mass
+        [  washer  ]      NEW - piezo ring, the sensing element
+        ===crown===       casting, nothing new touches it
+        [ clapper  ]      existing, untouched inside
+```
 
-- Output is large — tens of mV to several volts — and needs a **high
-  impedance load**. Source capacitance is ~15-20 nF; into 1 Mohm the low
-  corner is ~8 Hz, but into a typical 10-50 kohm line input the corner
-  lands in the hundreds of Hz and the result sounds thin and clacky. This
-  is the single most common reason DIY piezo pickups sound bad.
-- Front end: non-inverting unity-gain buffer (TL071, OPA1642, or a 2N5457
-  JFET follower) with ~10 Mohm to ground. Add a 1 Mohm series resistor and
-  back-to-back clamp diodes to the rails — a hard strike can produce tens
-  of volts.
-- Weaknesses: the disc plus its mounting has its own mechanical resonance
-  which stamps a peak on the response; and the crown is node-adjacent, so
-  the spectral balance will be skewed relative to what the bell actually
-  sounds like.
-- Bolt torque will matter a lot and is worth treating as a variable, not a
-  fixed choice.
-- The only option that stays trivial at 61 bells.
+Fit: unscrew the handle, slide both parts on, refit the handle. Removal
+reverses it. Nothing bonded, nothing machined, no contact with bronze. If
+the stock bolt runs out of thread with two extra parts in the stack, swap
+in a longer one — the bolt is hardware, not the instrument.
+
+**The washer is a load washer.** A piezo ring held in compression by the
+bolt preload; the bell's vibration modulates the force in the joint. Cheap
+piezo rings are easy to source — they are the guts of ultrasonic cleaner
+transducers. Build notes: piezo ceramic is brittle and hates uneven clamp
+load, so sandwich it between flat hardened washers and control the torque.
+Over-tightening cracks it.
+
+**The pod doubles as the seismic mass.** What the washer feels is the
+inertial reaction of everything above it — handle plus pod — pushing back
+against the crown as the crown accelerates. `F = m*a`, so with ~50 g of
+handle above it at 0.5-5 g the dynamic force is a couple of newtons peak,
+easily read by a piezo. Adding pod mass increases output. This is exactly
+how a compression accelerometer is built: seismic mass on a piezo stack.
+Stacking the pod *above* the washer rather than below turns packaging into
+signal.
+
+A lever, not free money — mass at the crown is vibrationally cheap because
+it sits near a node, but ringers feel weight in the hand.
+
+**Variants:**
+
+- *Minimum* — washer alone, flying leads to a pod that clips to the handle.
+  Least intrusive, no change to stack height.
+- *Maximum* — replace the handle entirely with a printed one containing
+  everything. Far more room for battery and radio, which matters at 37
+  bells, at the cost of changing the feel.
+
+**Front end.** Piezo output is large — tens of mV to several volts — and
+needs a **high impedance load**. Source capacitance is ~15-20 nF; into
+1 Mohm the low corner is ~8 Hz, but into a typical 10-50 kohm line input
+the corner lands in the hundreds of Hz and the result sounds thin and
+clacky. This is the single most common reason DIY piezo pickups sound bad.
+Use a non-inverting unity-gain buffer (TL071, OPA1642, or a 2N5457 JFET
+follower) with ~10 Mohm to ground, a 1 Mohm series resistor, and
+back-to-back clamp diodes to the rails — a hard strike can produce tens of
+volts.
+
+**Weaknesses.** The crown is node-adjacent, so the spectral balance will be
+skewed relative to what the bell actually sounds like. The washer plus its
+clamp has its own mechanical resonance. Bolt torque will matter a lot and
+is worth treating as a variable, not a fixed choice.
+
+The only option that stays trivial at 61 bells.
 
 ### B — High-bandwidth MEMS accelerometer, same adapter
 
@@ -366,6 +404,14 @@ shouldn't be discovered late.
 
 ## 6. Open questions
 
+0. **What is the actual crown hardware?** Everything in section 3 assumes a
+   through-bolt with spare thread, a bolted-on handle, and room in the
+   stack. That is the general pattern, not a verified fact about any
+   specific bell — makers differ, and this doc has been revised three times
+   on top of the assumption. Take a handle off one bell and look before
+   designing the adapter further. Experiment 1 does **not** wait on this: a
+   piezo disc squashed under the stock handle with flying leads answers the
+   crown-signal question without any adapter existing.
 1. **Which bell is the reference?** Malmark and Schulmerich differ in crown
    hardware, and the adapter has to fit whatever it's designed around.
 2. **Is there a bell available to experiment on freely?** The adapter needs
