@@ -58,33 +58,50 @@ compatibility. What remains of magnetic sensing is eddy-current sensing.
 
 ## 1. The instrument
 
-### Anatomy, and what the crown bolt is
+### Anatomy — Malmark, from the maker's construction drawing
 
-Every English handbell has a single fastener through a hole in the top of
-the casting. The handle bolts to it on the outside; the clapper assembly
-hangs from it on the inside. Exact hardware differs between makers
-(Malmark, Schulmerich, Whitechapel) — check the actual bell — but
-functionally they all have one.
+Verified against Malmark's own exploded diagram for bells G3 through C8.
+This supersedes earlier guesses in this doc, which had the clapper hanging
+from the crown screw. **It does not.**
 
-**This is the only rigid mechanical interface the instrument offers**, and
-removing the handle is routine maintenance rather than a modification.
-Everything below leans on it.
+A single **main assembly screw** runs down the axis and clamps the handle
+stack onto the crown. Outside to inside:
 
 ```
-                 handle                     <- replaceable, fair game
-                   |
-             ======#======   crown bolt     <- FAIR GAME, and already
-              /           \                    touching the casting
-             |   clapper   |                <- replaceable, fair game
-             |      o      |
-            /       |       \
-           |       (O)       |   inside the cup: a bracket can hang
-          /         ^         \  from the crown bolt without touching
-         |          |          | the bronze, provided it stops short
-        /     clapper strikes   \ of the mouth plane
-       |________________________|
-                  lip                       <- most movement, hands off
+        handle              (handle block + handle assembly screw inside)
+        handguard
+        lockwasher, external tooth   \  these set and hold the
+        yoke/handle coupler assembly  }  handle's rotational angle
+        lockwasher, external tooth   /
+        === bell casting ===        (isolation sleeve in the hole)
+        yoke                        inside, clamped to the crown
 ```
+
+The **clapper does not hang from the screw.** It rides on a horizontal
+**clapper shaft** carried in the **yoke**, running on a **bearing block**
+and **bearing screw**, with a **restraining spring** and an adjustable
+screw setting its return. The clapper itself is a separate stack on the end
+of that shaft: indexing spring, clapper, bowed spring washer, flanged
+bushing, clapper assembly screw.
+
+Consequences for us:
+
+- **The crown screw stack is the only external interface**, and it is
+  short. There is no room in it for an electronics pod — only a thin ring.
+- **The yoke is a second, better-hidden interface.** It is a rigid metal
+  part already clamped inside the crown, with its own fasteners (the
+  bearing screw). Mounting a sensor there sidesteps the screw-length budget
+  entirely and puts it unambiguously on the bell side of any isolation
+  sleeve. Needs clearance checking against the clapper shaft.
+- **The isolation sleeve is the biggest open risk.** If it only lines the
+  hole, fine. If it also separates the handguard from the bronze in the
+  *axial* load path, then Malmark has deliberately interrupted the exact
+  vibration path option A depends on, and our signal arrives damped and
+  low-passed. A 30-second look once a bell is apart.
+- **Two construction variants.** This drawing covers G3-C8; C#8 and up use
+  fixed metal clappers. A full-range product needs both.
+
+Elsewhere on the bell:
 
 - **Crown** — the top of the casting, close to a node for the main ring
   modes. That is why the bell is held there.
@@ -176,54 +193,71 @@ inside the cup.
 | C | Eddy-current coil on an internal bracket | Displacement | ~$12 | High | Non-contact fallback |
 | D | Passive magnet + coil, internal bracket | Velocity | ~$3 | Low | Cheap long shot |
 
-### A — Piezo on a crown-bolt adapter
+### A — Piezo ring in the crown stack
 
-The product shape the constraints point at. The bell's crown is already a
-clamped bolted joint — bolt, handle, casting, clapper. The adapter is one
-more layer in that sandwich: two annular parts that slide onto the existing
-bolt between the handle and the crown.
+The crown is already a clamped bolted joint. The sensing element is one
+thin ring added to it; the electronics live on the handle, because the main
+assembly screw is too short to carry a pod in the stack.
 
 ```
-        crown bolt        reuse, or swap for a longer one
+        main assembly screw
              |
-        [  handle  ]      existing, refits on top
-        [   pod    ]      NEW - electronics, and the seismic mass
-        [  washer  ]      NEW - piezo ring, the sensing element
-        ===crown===       casting, nothing new touches it
-        [ clapper  ]      existing, untouched inside
+        [   pod    ]      NEW - straps to the handle, not the stack
+        [  handle  ]      existing
+        [handguard ]      existing
+        [ piezo ring ]    NEW - the sensing element, above the teeth
+        [ lockwasher ] \
+        [  coupler   ]  }  existing - sets handle angle, never split
+        [ lockwasher ] /
+        === casting ===   nothing new touches it
+        [   yoke    ]     existing, inside; carries the clapper shaft
 ```
 
-Fit: unscrew the handle, slide both parts on, refit the handle. Removal
-reverses it. Nothing bonded, nothing machined, no contact with bronze. If
-the stock bolt runs out of thread with two extra parts in the stack, swap
-in a longer one — the bolt is hardware, not the instrument.
+Fit: unscrew the handle, add the ring, refit. Removal reverses it. Nothing
+bonded, nothing machined, no contact with bronze.
 
-**The washer is a load washer.** A piezo ring held in compression by the
-bolt preload; the bell's vibration modulates the force in the joint. Cheap
-piezo rings are easy to source — they are the guts of ultrasonic cleaner
-transducers. Build notes: piezo ceramic is brittle and hates uneven clamp
-load, so sandwich it between flat hardened washers and control the torque.
-Over-tightening cracks it.
+**The ring is a load washer.** A piezo ring held in compression by the screw
+preload; the bell's vibration modulates the force in the joint. Cheap piezo
+rings are easy to source — they are the guts of ultrasonic cleaner
+transducers.
 
-**The pod doubles as the seismic mass.** What the washer feels is the
-inertial reaction of everything above it — handle plus pod — pushing back
-against the crown as the crown accelerates. `F = m*a`, so with ~50 g of
-handle above it at 0.5-5 g the dynamic force is a couple of newtons peak,
-easily read by a piezo. Adding pod mass increases output. This is exactly
-how a compression accelerometer is built: seismic mass on a piezo stack.
-Stacking the pod *above* the washer rather than below turns packaging into
-signal.
+**Only the mass above the ring contributes.** The screw is a series load
+path, so the ring feels the same clamp force wherever it sits, but the
+*dynamic* part comes from the inertial reaction of everything above it
+pushing back as the crown accelerates. `F = m*a`, so with ~50 g of handle
+above it at 0.5-5 g the dynamic force is a couple of newtons peak — easily
+read by a piezo. This is exactly how a compression accelerometer is built:
+seismic mass on a piezo stack.
 
-A lever, not free money — mass at the crown is vibrationally cheap because
-it sits near a node, but ringers feel weight in the hand.
+**Moving the pod to the handle does not cost signal**, because the handle
+sits above the ring in the same load path. One condition: it must be
+rigidly coupled, mounted near the base of the handle close to the handle
+block. Out on the loop it becomes a spring-mass system with its own
+resonance, and you end up measuring the pod rather than the bell.
 
-**Variants:**
+**Placement rules**, from Malmark's construction drawing:
 
-- *Minimum* — washer alone, flying leads to a pod that clips to the handle.
-  Least intrusive, no change to stack height.
-- *Maximum* — replace the handle entirely with a printed one containing
-  everything. Far more room for battery and radio, which matters at 37
-  bells, at the cost of changing the feel.
+- Lower in the stack means more mass above, means more output — so go as
+  low as the following two rules allow.
+- **Never inside the toothed interface.** The external-tooth lockwashers
+  and the coupler set and hold the handle's rotational angle. A smooth
+  ceramic ring in there lets the handle rotate.
+- **Never against a lockwasher.** Piezo ceramic on a tooth cracks. It needs
+  a flat shim on each face, which counts against the thickness budget.
+- Budget roughly 1-3 mm for ring plus shims. The main assembly screw is
+  itself fair-game hardware, so a few mm longer is legitimate if the yoke's
+  thread has the depth — the budget may be less fixed than it first looks.
+
+**The isolation sleeve is the main risk to this option.** If it only lines
+the hole in the casting, fine. If it also separates the handguard from the
+bronze in the axial load path, the vibration we want is damped and
+low-passed before it ever reaches the ring. Check before building.
+
+**Alternative if the stack proves unworkable:** mount to the **yoke**
+instead, using the bearing screw. Rigid metal, already clamped inside the
+crown, no screw-length budget, unambiguously on the bell side of the
+isolation sleeve, and completely hidden. Needs clearance checking against
+the clapper shaft.
 
 **Front end.** Piezo output is large — tens of mV to several volts — and
 needs a **high impedance load**. Source capacitance is ~15-20 nF; into
@@ -404,20 +438,26 @@ shouldn't be discovered late.
 
 ## 6. Open questions
 
-0. **What is the actual crown hardware?** Everything in section 3 assumes a
-   through-bolt with spare thread, a bolted-on handle, and room in the
-   stack. That is the general pattern, not a verified fact about any
-   specific bell — makers differ, and this doc has been revised three times
-   on top of the assumption. Take a handle off one bell and look before
-   designing the adapter further. Experiment 1 does **not** wait on this: a
-   piezo disc squashed under the stock handle with flying leads answers the
-   crown-signal question without any adapter existing.
-1. **Which bell is the reference?** Malmark and Schulmerich differ in crown
-   hardware, and the adapter has to fit whatever it's designed around.
-2. **Is there a bell available to experiment on freely?** The adapter needs
+*Answered: crown hardware is now known — Malmark, per the maker's
+construction drawing. Target platform is Malmark. Pod goes on the handle;
+only a thin ring enters the stack.*
+
+0. **Is there polymer in the axial load path?** The isolation sleeve either
+   just lines the hole in the casting, or it also separates the handguard
+   from the bronze. If the latter, option A is sensing through a damped
+   joint and the yoke becomes the primary mount instead. Highest-value
+   30-second check, next time a bell is apart.
+1. **How much spare thread does the main assembly screw have**, and how
+   deep is the yoke's threaded hole? Sets the real thickness budget for
+   ring plus shims.
+2. **Is there clearance on the yoke for a sensor** next to the clapper
+   shaft and bearing block, on the smallest bell in scope?
+3. **Is there a bell available to experiment on freely?** The design needs
    repeated fitting and removal.
-3. **How many bells get instrumented in v1?** Prototyping one bell permits
-   choices that don't survive to 37.
-4. **Does the adapter have to fit under the stock handle**, or can it
-   replace the handle assembly entirely? Replacing it gives far more room
-   for electronics and battery, at the cost of changing the feel.
+4. **How many bells get instrumented in v1?** Prototyping one bell permits
+   choices that don't survive to 37 — and the range spans two construction
+   variants, since C#8 and up use fixed metal clappers.
+
+Note that **Experiment 1 waits on none of this**: a piezo disc squashed
+under the stock handle with flying leads answers the crown-signal question
+before any of these are settled.
