@@ -69,8 +69,8 @@ stack onto the crown. Outside to inside:
 
 ```
         handle              (handle block + handle assembly screw inside)
-        handle block        square hole
-        handguard           square hole
+        handle block        drops into the handguard's pocket
+        handguard           square pocket on its top face, keyed hole
         lockwasher, external tooth
         === bell casting ===        (plastic isolation sleeve in the hole)
         yoke                        inside, clamped to the crown
@@ -211,9 +211,9 @@ assembly screw is too short to carry a pod in the stack.
              |
         [    pod     ]    NEW - in the handle's open space
         [   handle   ]    existing
-        [handle block]    existing, square hole
-        [ piezo ring ]    NEW - position 3, the sensing element
-        [ handguard  ]    existing, square hole
+        [handle block]    existing, drops into a square pocket
+        [ handguard  ]    existing, square pocket on its top face
+        [ piezo ring ]    NEW - position 2, the sensing element
         [ lockwasher ]    existing
         === casting ===   nothing new touches it
         [    yoke    ]    existing, inside; carries the clapper shaft
@@ -274,12 +274,29 @@ Three candidate positions:
 |---|---|---|---|
 | 1 | Under the screw head | Bolt tension — via yoke and coupler | Easy, inside the handle |
 | 2 | Below the handguard | Clamped stack — via the outer face | Must exit at the handguard rim |
-| 3 | **Above the handguard** | Clamped stack — via the outer face | Easy, inside the handle |
+| 3 | Above the handguard | Clamped stack — via the outer face | **Blocked — see below** |
 
-**Position 3 dominates position 2.** Same load path, same outer-face
-interface, and the only mass difference is the handguard — a thin disc. But
-the wire exits on the handle side instead of at the rim. Take 3 over 2
-regardless of everything else.
+**Position 2 is the working choice.** Position 3 looked better on wiring
+until the handguard's real geometry showed up: its handle-facing side has a
+**square pocket** that the handle block drops into, and that pocket is the
+handle's anti-rotation feature.
+
+That kills position 3 twice over:
+
+- **No wire route.** The pocket is a close fit by design. Squeezing even a
+  25 um flex through it either binds the handle block — defeating the
+  anti-rotation fit — or crushes the flex against a corner. It is the worst
+  route on the assembly precisely because it is doing a mechanical job.
+- **The pocket caps the ring OD.** The square is roughly half the
+  handguard's width, so a ring there is limited to maybe 13-17 mm OD with a
+  bore still clearing the square rod. That rules out the 30x21x0.3
+  catalogue part and forces a small custom ring. At position 2 the ring can
+  be as wide as the handguard underside, so the catalogue part fits.
+
+*(This supersedes an earlier revision that recommended position 3.)*
+
+**Position 3 is recoverable, but only via a replacement handguard** — see
+the productization note at the end of this section.
 
 **Position 1 is weak on joint mechanics.** A preloaded bolted joint splits
 external dynamic load between the bolt and the clamped members by relative
@@ -293,7 +310,7 @@ lockwasher with a plastic flange. The inside face is hidden and
 cosmetically irrelevant. So it is quite possible that position 1's path
 (casting -> yoke -> coupler -> screw) is the **all-metal** one, while
 positions 2 and 3 sense through a plastic flange. That would trade
-position 1's poor load factor against position 3's damped path, and the
+position 1's poor load factor against position 2's damped path, and the
 comparison is genuinely too close to call from the drawing.
 
 **Resolution: fit both and measure.** Rings cost about a dollar and the
@@ -373,11 +390,56 @@ ring.
 
 - **The ring will be shorted out.** Silver electrodes on both faces, and in
   this stack both faces contact metal that is all electrically common
-  through the coupler and screw. Needs a thin insulator on one face —
-  25 um Kapton — plus a foil tab to pick off the signal. Adds ~50 um.
+  through the coupler and screw. It needs an insulator on one face and a
+  pickoff on the other — see below.
 - **0.3 mm ceramic at 30 mm diameter is fragile.** It cracks on any
   bending. Flat parallel shims either side, moderate torque, and buy
   spares.
+
+### Getting the signal out — use a flex circuit, not bare foil
+
+**What is actually at risk.** In-use flexing fatigue is *not* the main
+worry. A correctly preloaded joint does not move: clamp force stays far
+above the dynamic load, the interfaces never separate, and the pickoff is
+trapped rather than cycling. Ringing hard does not work it back and forth.
+
+The real hazards:
+
+- **Assembly.** Torquing the screw drags rotating parts across whatever is
+  underneath, shearing or wrinkling a loose foil. Happens on the bench, not
+  in performance.
+- **Sharp edges.** A foil exiting over a square pocket corner gets creased
+  and eventually cut. This is the one that bites.
+- **Fretting.** Micro-slip at contact edges under vibration is real in
+  bolted joints and abrades thin foil over time.
+
+**Use a single-sided polyimide FPC.** It collapses three parts into one:
+the polyimide base *is* the insulator (replacing the Kapton), the copper
+*is* the electrode (replacing the foil tab), and the tail *is* the wire
+route. Copper supported by polyimide resists creasing far better than loose
+foil, the outline can be drawn with a proper radius where it leaves the
+joint, and the whole thing is ~50 um. Cheap in small quantities from
+JLCPCB and similar.
+
+Leave the copper exposed (no coverlay) only in the ring contact area.
+
+**Keep the solder joint outside the clamped zone** — solder is brittle and
+cracks under preload.
+
+### Productization note — replace the handguard
+
+The handguard is hardware, so it is fair game. A purpose-made replacement
+with a recess for the ring and a moulded channel out to the rim solves the
+thickness budget and the wire exit in one part, gives the flex a chamfered
+exit instead of a sharp corner, and reopens position 3.
+
+That is a real manufacturing step, but it is one cheap disc per bell and it
+removes the problem rather than working around it.
+
+**Sequencing:** position 2 with the catalogue 30x21x0.3 ring and an FPC
+pickoff needs no custom parts and can be built now. Keep the replacement
+handguard for productization, once the signal is known to be worth building
+around.
 
 **Weaknesses.** The crown is node-adjacent, so the spectral balance will be
 skewed relative to what the bell actually sounds like. The washer plus its
@@ -514,7 +576,7 @@ says nothing about the 4x partial or the strike transient — and plastic
 damping does its worst exactly up there, above where the hand can report.
 
 1. Piezo ring + charge amp (1 nF feedback, 100 Mohm bleed, FET-input),
-   fitted at position 3. Fit one at position 1 as well and compare.
+   fitted at position 2. Fit one at position 1 as well and compare.
 2. Record into a laptop line input or USB interface. **Simultaneously
    record the same strikes with a reference microphone a metre away.**
 3. Compare spectra and decay envelopes.
@@ -567,12 +629,15 @@ construction drawing. Target platform is Malmark. Pod goes on the handle;
 only a thin ring enters the stack.*
 
 0. **Which clamped face carries the plastic — the yoke side, the handguard
-   side, or both?** This decides whether position 1 or position 3 has the
+   side, or both?** This decides whether position 1 or position 2 has the
    metal path, and it is the one thing that could flip the recommendation.
    Highest-value 30-second look, next time a bell is apart.
 1. **How much spare thread does the main assembly screw have** in the
    coupler? Sets the real thickness budget for ring plus shims.
-2. **Is there a bell available to experiment on freely?** The design needs
+2. **What is the radial clearance under the handguard** at position 2, for
+   the FPC tail to exit? The crown is domed and the handguard flat, so
+   there should be a wedge opening outward — confirm it.
+3. **Is there a bell available to experiment on freely?** The design needs
    repeated fitting and removal.
 4. **How many bells get instrumented in v1?** Prototyping one bell permits
    choices that don't survive to 37 — and the range spans two construction
