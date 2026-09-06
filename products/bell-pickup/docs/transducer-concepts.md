@@ -5,8 +5,9 @@ vibration out as an electrical signal. Signal *processing* is deliberately
 out of scope here — this is only about the transducer, its mounting, and
 the front-end amplifier it needs.
 
-Status: nothing built or measured yet. Every number below is an estimate
-from first principles and should be replaced with a measurement.
+**Status: paused pending measurements — see section 6.** Nothing has been
+built. Every number below is an estimate from first principles and should
+be replaced with a measurement.
 
 ---
 
@@ -347,11 +348,29 @@ supplier — 2-piece sets, no minimum order, sells to individuals.
 
 Listing: <https://www.steminc.com/PZT/EN/producttag/2/piezo-ring>
 
-**Start with SMR3021T03412** — 0.3 mm thick with a 21 mm bore that clears
-any plausible square-rod diagonal. The 28x9 parts are cheaper but their
-9 mm bore only works if the coupler is ~6 mm across the flats or less.
-Measure the rod's *diagonal* before ordering, and check the handguard face
-diameter — 30 mm OD may be too large on a high bell.
+**The ring must be fully supported on both faces.** This is a harder
+constraint than it first appears and it may disqualify the 30x21 part.
+
+At position 2 the ring sits between the handguard underside and the
+lockwasher. If the ring is wider than the lockwasher, the annulus outside
+the lockwasher has nothing beneath it but the casting — so it either bears
+directly on the bronze, breaking the no-contact rule, or it is unsupported
+and cracks as soon as the handguard is torqued onto it. Lockwashers on the
+higher bells are likely well under 21 mm OD, which would strand the whole
+ring.
+
+**Fix: swap the external-tooth lockwasher for a flat hardened washer sized
+to the ring.** The lockwasher is hardware, so it is fair game, and a flat
+parallel bearing face was already required — a toothed washer was never an
+acceptable surface against brittle ceramic. Handle anti-loosening with
+threadlocker, or relocate the lockwasher above the ring. This is
+thickness-neutral, and it decouples ring diameter from whatever Malmark
+happened to fit.
+
+Ring geometry then reduces to: **bore > the square rod's diagonal**, and
+**OD <= the replacement washer's bearing face**, which we control.
+
+Nothing more should be ordered until the measurements below are taken.
 
 For production quantities, PI Ceramic
 (<https://www.pi-usa.us/en/products/piezo-transducers-sensing-ultrasound/piezoelectric-ceramic-rings>)
@@ -622,7 +641,30 @@ shouldn't be discovered late.
 
 ---
 
-## 6. Open questions
+## 6. Measurements needed before anything is ordered
+
+**Status: paused here.** The design is specified far enough that the next
+useful move is calipers, not more reasoning. Take these on a mid bell and
+again on the smallest bell in scope, since the hardware scales down.
+
+| # | Measure | Decides |
+|---|---|---|
+| 1 | Lockwasher OD and ID | Whether it must be replaced with a flat washer, and the ring's max OD |
+| 2 | Square coupler, across the flats | Diagonal = the ring's minimum bore |
+| 3 | Handguard underside — diameter, and whether it is flat or relieved | The bearing face available at position 2 |
+| 4 | Spare thread on the main assembly screw into the coupler | The real thickness budget |
+| 5 | Radial clearance under the handguard at its rim | Whether the FPC tail can exit |
+| 6 | Is there plastic in the axial load path — yoke face, handguard face, or both? | Whether position 1 or 2 has the metal path |
+| 7 | Handguard pocket, width and depth | Recorded for the replacement-handguard route later |
+
+Item 6 is the highest-value one: it is the only measurement that could flip
+the recommendation from position 2 back to position 1, and it costs a look
+rather than a caliper.
+
+Item 1 is the most likely to force a custom ring. If the lockwasher on a C7
+is small, no catalogue part will fit that bell even with the washer swap.
+
+## 7. Open questions
 
 *Answered: crown hardware is now known — Malmark, per the maker's
 construction drawing. Target platform is Malmark. Pod goes on the handle;
