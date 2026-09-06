@@ -10,6 +10,7 @@ trigger sound electronically/wirelessly instead of with a physical clapper.
 3dprint/    OpenSCAD model for the bell body and printed test pieces
 firmware/   ESP32 firmware (transmitter + receiver) and PC test tooling
 android/    Android app for the v0.2 live-demo receiver (BLE-only)
+docs/       Design documents — hardware design considerations and decisions
 ```
 
 ## Hardware
@@ -18,3 +19,6 @@ android/    Android app for the v0.2 live-demo receiver (BLE-only)
 - [Adafruit ESP32 Feather V2](https://www.adafruit.com/product/5400) — reads the LIS3DH over I2C, transmits ring events wirelessly via ESP-NOW or BLE
 
 See [firmware/README.md](firmware/README.md) for wiring, bring-up steps, and details on the wireless protocol.
+
+For where the hardware is going next, see
+[docs/hardware-design.md](docs/hardware-design.md).
