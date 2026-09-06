@@ -194,7 +194,9 @@ voltage-based ModelGauge (MAX17048 class: I2C, no sense resistor, tiny) or
 coulomb counting (MAX17260 class: sense resistor in the return path, more
 accurate under pulsed load, more BOM and layout care). **The pulsed load is the
 crux** — a 200–300mA radio burst sags terminal voltage and reads as a
-state-of-charge cliff on a voltage-only gauge.
+state-of-charge cliff on a voltage-only gauge. Conveniently, both candidate dev
+boards (§7) carry a MAX17048 already, so the voltage-based option can be
+validated against a reference measurement before anything is committed.
 
 **Unresolved tension:** an accurate gauge wants to stay powered across an
 off-cycle to keep its learned state, while "off" wants zero leakage. Either
@@ -297,7 +299,7 @@ specifies range by measurement and margin rather than by convenience.
 |---|---|---|
 | 3b | ESP32 variant (S3 / C6 / C3), and one SKU or two | Evaluate on real boards — §7 |
 | 4 | How ~60 units share the air: broadcast vs. unicast, dedup, reliability, and whether 802.15.4 helps | Open. Answerable by experiment — §7 |
-| 5 | Fuel gauge: voltage-based ModelGauge vs. coulomb counting | Deferred |
+| 5 | Fuel gauge: voltage-based ModelGauge vs. coulomb counting | Deferred — but now answerable by measurement at no extra cost, since both candidate Feathers carry a MAX17048 (§7, measurement 7) |
 | — | IMU part selection from the §3.1 candidates | Open |
 | — | Gyro full-scale range: confirm ±2000 dps against real traces | Open, needs measurement |
 | — | Loudness quantity (deferred to firmware by decision #2) | Deferred |
@@ -329,12 +331,63 @@ defers:
 - Connector and switch placement on the casting
 - Internal EMC between the regulator and the IMU (§4)
 
-**Boards to obtain** — one each of ESP32-S3, ESP32-C6 and ESP32-C3, in the
-Feather form factor where available, so the battery, JST and mounting carry
-over from v0.2. Note that the S3 Feather carries a MAX17048 fuel gauge, which
-would satisfy the accurate-gauge requirement with no custom hardware; verify
-what the C6 board provides. Plus a 6-DOF IMU breakout that exposes SPI, not
-just STEMMA QT I2C, so the interface lever in §3.1 can actually be tested.
+### Boards and parts to obtain
+
+Part numbers verified September 2026. Prices approximate except where noted.
+
+**MCU boards**
+
+| Item | Qty | ≈ each | What it answers |
+|---|---|---|---|
+| Adafruit ESP32-S3 Feather, 4MB flash / 2MB PSRAM (#5477) | 2 | $18 | One as the receiver dongle — the only candidate with full USB-OTG, and therefore the only one that can present as HID or MIDI; one as an S3 bell candidate |
+| Adafruit ESP32-C6 Feather (#5933) | 2 | $13 | Bell candidate. Two rather than one, because testing 802.15.4/Thread as the concurrency answer needs a C6 at both ends |
+| Seeed XIAO ESP32C3 | 6–8 | $9 | Concurrency traffic generators — see below |
+
+Both Feathers carry a **MAX17048 fuel gauge on board**, which satisfies the
+accurate-gauge requirement (§3.5) with no custom hardware, and turns open
+decision #5 from an argument into a measurement — see the measurement list.
+
+**On the C3's role.** As an MCU candidate it is weak: no 802.15.4, the same
+Wi-Fi 4 generation as the S3, less headroom, and no Feather-form board
+carrying the fuel gauge. Its real value here is as **cheap concurrency traffic
+generators.** Six to eight XIAOs firing synthetic ring packets take measurement
+4 from N=3 to N=8–10, and they need no IMU, no battery and no enclosure — just
+USB power and a firmware loop. The "is the cheap chip adequate at ×60?" data
+point comes along for free.
+
+**IMU**
+
+| Item | Qty | ≈ each | Note |
+|---|---|---|---|
+| Adafruit LSM6DSOX 6-DoF (#4438) | 2 | $12 | Start here. ±16g / ±2000 dps / 16-bit, and it breaks out **SPI (SCK, DO, SDA, CS) plus INT1**, so the SPI + data-ready-interrupt lever in §3.1 is genuinely testable rather than STEMMA QT I2C only. Also carries the MLC/FSM escape hatch noted in §3.1 |
+| Adafruit LSM6DS3TR-C (#4503) | 1 | $8 | Optional. Cheaper part, same ranges, slightly noisier — worth knowing whether it suffices, since IMU cost multiplies by 60 |
+
+**The ICM-42688-P is deferred.** It is the lowest-noise part on the §3.1
+candidate list, but there is no first-party Adafruit or SparkFun breakout —
+only Tindie, Elecrow and generic sellers — so it costs bring-up time for a
+comparison that may not be needed. Order it only if the LSM6DSOX's noise floor
+proves marginal for soft-damp detection.
+
+**Test instrumentation**
+
+| Item | Qty | ≈ each | What it answers |
+|---|---|---|---|
+| Nordic Power Profiler Kit II (Adafruit #5048) | 1 | $90 (verified) | Measurement 1. 200nA–1A range, so it captures both µA idle and the 200–300mA radio bursts that a multimeter averages away. Its digital inputs also work as a low-end logic analyzer with code-synchronized capture, covering much of the latency instrumentation |
+| JST-PH 2-pin pigtail / extension leads | 2–3 | $1 | Needed to break into the battery line so the PPK2 sits between cell and board. Easy to omit, and omitting it blocks the entire power measurement |
+| Piezo transducer or buzzer | 2 | $2 | The acoustic latency rig — measurement 6 |
+| 8-channel USB logic analyzer | 1 | $15 | Optional, given the PPK2's digital inputs. Worth it for SPI bus decode |
+
+**Consumables.** 500mAh LiPo cells (2–3, one per simultaneously tested unit);
+STEMMA QT cables (3–4, for fast I2C bring-up before committing to SPI wiring);
+male header strips (Feathers ship with headers loose, and the IMU breakouts
+need soldering for SPI regardless); breadboard and jumper wires; two SPDT slide
+switches, to prototype the §3.7 hard switch on the regulator-enable line and
+confirm charge-while-off actually holds; USB-C cables.
+
+**Approximate total:** ~$290 core, of which the PPK2 is $90. Trimming to one
+C6, no LSM6DS3TR-C and no logic analyzer brings it to ~$215. The PPK2 and the
+XIAO batch are the two purchases that unlock the measurements the open
+decisions depend on, and should be the last things cut.
 
 **Measurements to make**
 
@@ -350,3 +403,14 @@ just STEMMA QT I2C, so the interface lever in §3.1 can actually be tested.
    scales. This converts an unanswerable architecture question into a
    measurement, and can start with three boards long before there are 60.
 5. Latency distribution (p50/p95/p99), not averages — the tail is the problem.
+6. **Acoustic end-to-end latency.** Fire a piezo click from a GPIO at the
+   detection instant, record the click and the synthesized tone in one track,
+   and measure the sample delta. This closes the `play()` → actually-audible
+   term that is still blank in the Android README's latency budget, and it is
+   the only measurement that captures the audio HAL. A phone voice recorder is
+   adequate — both events pass through the same recording path, so the
+   recorder's own latency is common-mode and cancels out of the delta.
+7. **Fuel gauge validation.** The onboard MAX17048 against PPK2 ground truth
+   under a pulsed radio load — a voltage-based gauge reads a TX burst's
+   terminal-voltage sag as a state-of-charge cliff, and this shows whether that
+   matters in practice. Answers open decision #5 at no extra hardware cost.
