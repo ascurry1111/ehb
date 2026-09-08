@@ -46,7 +46,7 @@ Neither applies to a single-bell prototype. Both are now requirements.
 | 1 | Motion sensor type | **6-DOF IMU** (accel + gyro) | Removes the accel-only gravity-leakage failure class documented in `firmware/README.md`, and measures swing rate directly. See §3.1. |
 | 2 | What quantity defines "loudness" | **Deferred to firmware** | A 6-DOF IMU captures every candidate — peak linear acceleration, integrated forward velocity, angular rate — in one data stream. Once the hardware's ranges are specified so that none of them clip, choosing between them is a tuning decision made against recorded traces, not a parts decision. The hardware obligation is range and resolution headroom. See §3.2. |
 | 3a | Transports | **Both BLE and a low-latency link, one active at a time** | BLE keeps the no-dongle path for personal practice; the low-latency link serves ensemble. Never concurrent — running both stacks on one radio reintroduces the coexistence jitter recorded in `firmware/README.md`. Transport selection is a configuration function. |
-| 3b | MCU variant | **Open — evaluate S3, C6 and C3 on real boards** | See §3.4 and §7. |
+| 3b | MCU variant | **Open — C6 is the working assumption for the bell; evaluate S3, C6 and C3 on real boards** | Chosen provisionally for the extended wireless options, and boards ordered on that basis. Not a decision until the §7 measurements report back. The receiver is a separate question — see §3.4 and §7. |
 | 6 | Power switch | **Hard mechanical switch** for v0.3 | Simplest thing that satisfies the charge-while-off requirement. Soft latch revisited in a later design. |
 | 7 | Runtime target | **2 hours of active use** | Neither a rehearsal nor a concert normally exceeds this. Capacity implications in §3.5. |
 | 8 | Board strategy | **Dev boards for v0.3** | Still prototyping; custom PCB deferred. What dev boards can and cannot prove is set out in §7. |
@@ -297,7 +297,7 @@ specifies range by measurement and margin rather than by convenience.
 
 | # | Decision | Status |
 |---|---|---|
-| 3b | ESP32 variant (S3 / C6 / C3), and one SKU or two | Evaluate on real boards — §7 |
+| 3b | ESP32 variant (S3 / C6 / C3), and one SKU or two | C6 assumed for the bell, boards ordered; confirm or overturn by measurement — §7 |
 | 4 | How ~60 units share the air: broadcast vs. unicast, dedup, reliability, and whether 802.15.4 helps | Open. Answerable by experiment — §7 |
 | 5 | Fuel gauge: voltage-based ModelGauge vs. coulomb counting | Deferred — but now answerable by measurement at no extra cost, since both candidate Feathers carry a MAX17048 (§7, measurement 7) |
 | — | IMU part selection from the §3.1 candidates | Open |
@@ -333,27 +333,50 @@ defers:
 
 ### Boards and parts to obtain
 
-Part numbers verified September 2026. Prices approximate except where noted.
+Part numbers verified September 2026. Quantities are as actually ordered;
+prices approximate except where noted.
+
+**Target for v0.3: two functioning bells and one receiver.** That is the
+hardware deliverable this parts list is sized for, and the C6 is the working
+assumption for the bell platform, chosen for the extended wireless options
+(§3.4). It remains an assumption rather than a decision until the §7
+measurements report back.
 
 **MCU boards**
 
 | Item | Qty | ≈ each | What it answers |
 |---|---|---|---|
-| Adafruit ESP32-S3 Feather, 4MB flash / 2MB PSRAM (#5477) | 2 | $18 | One as the receiver dongle — the only candidate with full USB-OTG, and therefore the only one that can present as HID or MIDI; one as an S3 bell candidate |
-| Adafruit ESP32-C6 Feather (#5933) | 2 | $13 | Bell candidate. Two rather than one, because testing 802.15.4/Thread as the concurrency answer needs a C6 at both ends |
-| Seeed XIAO ESP32C3 | 6–8 | $9 | Concurrency traffic generators — see below |
+| Adafruit ESP32-S3 Feather, 4MB flash / 2MB PSRAM (#5477) | 2 | $18 | The receiver, when the receiver needs to present as HID or MIDI — the only candidate with full USB-OTG. Also an S3 bell candidate for comparison |
+| Adafruit ESP32-C6 Feather (#5933) | 3 | $13 | Two bells plus a receiver, per the v0.3 target. The third is not a spare — 802.15.4 testing needs a C6 at both ends |
+| Seeed XIAO ESP32C3 | 9 | $9 | Concurrency traffic generators — see below |
 
 Both Feathers carry a **MAX17048 fuel gauge on board**, which satisfies the
 accurate-gauge requirement (§3.5) with no custom hardware, and turns open
 decision #5 from an argument into a measurement — see the measurement list.
 
+**The receiver role splits across two boards, and that is expected.** A C6
+receiver is required to test 802.15.4 (both ends must be C6), but the C6's USB
+is Serial/JTAG — CDC only — so it cannot present as HID or MIDI. Presenting the
+receiver as a class-compliant MIDI device, which is what removes the need for a
+custom host app and gives a proper low-latency path on every OS, requires the
+S3's full USB-OTG. Expect to run both configurations: **C6 receiver for radio
+experiments, S3 receiver for host-delivery experiments.** Native CDC on the C6
+is still far better than v0.1's UART-bridge path — it avoids the vendor-driver
+buffering that made that path slow — it just is not the endgame.
+
 **On the C3's role.** As an MCU candidate it is weak: no 802.15.4, the same
 Wi-Fi 4 generation as the S3, less headroom, and no Feather-form board
 carrying the fuel gauge. Its real value here is as **cheap concurrency traffic
-generators.** Six to eight XIAOs firing synthetic ring packets take measurement
-4 from N=3 to N=8–10, and they need no IMU, no battery and no enclosure — just
-USB power and a firmware loop. The "is the cheap chip adequate at ×60?" data
-point comes along for free.
+generators.** They need no IMU, no battery and no enclosure — just USB power
+and a firmware loop — and the "is the cheap chip adequate at ×60?" data point
+comes along for free.
+
+**Nine XIAOs plus two C6 bells is eleven simultaneous transmitters, which is a
+real choir, not a scaling trend.** A 3-octave ensemble is ~11 ringers (§1), so
+eleven transmitters firing in the same millisecond reproduces the actual worst
+case — every ringer striking a chord together — rather than merely showing how
+loss scales with N. That makes measurement 4 a pass/fail test against a real
+musical event, which is a much stronger result than an extrapolation.
 
 **IMU**
 
@@ -373,21 +396,33 @@ proves marginal for soft-damp detection.
 | Item | Qty | ≈ each | What it answers |
 |---|---|---|---|
 | Nordic Power Profiler Kit II (Adafruit #5048) | 1 | $90 (verified) | Measurement 1. 200nA–1A range, so it captures both µA idle and the 200–300mA radio bursts that a multimeter averages away. Its digital inputs also work as a low-end logic analyzer with code-synchronized capture, covering much of the latency instrumentation |
-| JST-PH 2-pin pigtail / extension leads | 2–3 | $1 | Needed to break into the battery line so the PPK2 sits between cell and board. Easy to omit, and omitting it blocks the entire power measurement |
-| Piezo transducer or buzzer | 2 | $2 | The acoustic latency rig — measurement 6 |
-| 8-channel USB logic analyzer | 1 | $15 | Optional, given the PPK2's digital inputs. Worth it for SPI bus decode |
+| JST PH 2-pin cable, **male header** 200mm (#3814) | 1–2 | $1 | Mates with the **battery's** connector; bare wires into the PPK2 input. Needed only for measurement 7, where the real cell must be inline |
+| JST PH 2-pin cable, **female connector** 100mm (#261) | 2 | $1 | Plugs into the **Feather's** battery socket; bare wires from the PPK2 output. This one alone unlocks measurement 1, since PPK2 source mode (0.8–5V, 1A) can replace the battery entirely — and that gives cleaner data, with no cell sag confounding the trace |
+| Piezo buzzer PS1240 (#160) | 2 | $1.50 | The acoustic latency rig — measurement 6. **Must be passive** (no internal oscillator); the PS1240 is |
+| 8-channel USB logic analyzer | — | $15 | **Not purchased.** The PPK2's digital inputs cover the code-synchronized capture; revisit only if SPI bus decode is needed |
 
-**Consumables.** 500mAh LiPo cells (2–3, one per simultaneously tested unit);
-STEMMA QT cables (3–4, for fast I2C bring-up before committing to SPI wiring);
-male header strips (Feathers ship with headers loose, and the IMU breakouts
-need soldering for SPI regardless); breadboard and jumper wires; two SPDT slide
-switches, to prototype the §3.7 hard switch on the regulator-enable line and
-confirm charge-while-off actually holds; USB-C cables.
+**JST-PH is 2.0mm pitch** — not XH (2.5mm), ZH (1.5mm) or SH (1.0mm), all of
+which look similar and are wrong. Polarity is not standardized across cheap
+vendors; Adafruit's are consistently red = positive, but meter anything from
+another source before connecting it to a LiPo input.
 
-**Approximate total:** ~$290 core, of which the PPK2 is $90. Trimming to one
-C6, no LSM6DS3TR-C and no logic analyzer brings it to ~$215. The PPK2 and the
-XIAO batch are the two purchases that unlock the measurements the open
-decisions depend on, and should be the last things cut.
+**Consumables.** 500mAh LiPo cells (one per simultaneously tested unit); STEMMA
+QT cables (for I2C bring-up before committing to SPI wiring); male header
+strips; breadboard and jumper wires; two SPDT slide switches, to prototype the
+§3.7 hard switch on the regulator-enable line and confirm charge-while-off
+actually holds; USB-C cables; a 1/4W through-hole resistor assortment (E12
+values) — 100Ω for the piezo, and LED current limiting, pull-ups and dividers
+throughout.
+
+**Soldering is required, and it gates only part of the plan.** Measurements
+1–5 and 7 all connect over STEMMA QT and the JST battery line, so the sensor
+characterization, the power budget, the fuel-gauge validation and the whole
+concurrency experiment need no soldering at all. Only two things do: the piezo
+rig (measurement 6) and the SPI + data-ready-interrupt comparison in §3.1,
+whose pads are on the LSM6DSOX breakout. Press-fitting headers into the
+Feather's plated through-holes is not a substitute — the holes are sized for
+solder to fill, and intermittent contact during a measurement produces data
+that looks plausible and is wrong.
 
 **Measurements to make**
 
@@ -410,6 +445,24 @@ decisions depend on, and should be the last things cut.
    the only measurement that captures the audio HAL. A phone voice recorder is
    adequate — both events pass through the same recording path, so the
    recorder's own latency is common-mode and cancels out of the delta.
+   - **Drive a single short pulse, not a tone** — GPIO high ~100µs, then low.
+     That gives a near-vertical attack and an unambiguous onset in the
+     waveform; a tone burst has a slower envelope and a fuzzier start.
+   - One pin to GPIO, one to GND, with ~100Ω in series. The element is
+     capacitive (~15nF), so a GPIO drives it directly, but switching into that
+     capacitance pulls a brief inrush above the ESP32's 40mA per-pin maximum;
+     100Ω brings it inside spec at no cost to the attack, since the resulting
+     RC is microseconds against an acoustic rise time orders of magnitude
+     slower. Mount the element against something rigid — in free air it is
+     quiet.
+   - **Co-locate the piezo with the speaker.** Sound travels ~2.9ms per metre,
+     so a piezo a metre further from the recorder than the phone's speaker
+     injects 3ms of error into a measurement where 5ms is the entire argument.
+     Within a few centimetres of the speaker, the path lengths cancel and the
+     recorder can sit anywhere. The rigorous version, if it is ever needed, is
+     a stereo recording with the GPIO pulse fed electrically into one channel
+     through a divider and a mic on the other, which removes acoustic travel
+     time from the trigger channel entirely.
 7. **Fuel gauge validation.** The onboard MAX17048 against PPK2 ground truth
    under a pulsed radio load — a voltage-based gauge reads a TX burst's
    terminal-voltage sag as a state-of-charge cliff, and this shows whether that
