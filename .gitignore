@@ -29,6 +29,9 @@ __pycache__/
 .venv/
 venv/
 
+# Real WiFi/OTA credentials -- keep only the .example template in git
+wifi_credentials.h
+
 # OpenSCAD backup files
 *.scad~
 *.csg

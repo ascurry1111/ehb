@@ -7,7 +7,41 @@ feather_transmitter/feather_transmitter.ino   Feather ESP32 V2 — ring detectio
 devkit_receiver/devkit_receiver.ino           ESP32-DEVKITC-V4 — ESP-NOW rx, forwards to USB serial (v0.1 path)
 receiver_tests/pc_serial_listener.py          PC — plays a tone from the ESP-NOW/serial path (v0.1 path)
 receiver_tests/pc_ble_listener.py             PC — plays a tone from the BLE path directly
+xiao_c3_node/xiao_c3_node.ino                 Seeed XIAO ESP32C3 — base node firmware: USB bring-up + WiFi/OTA (v0.3 concurrency demo)
+tools/flash_all.ps1                           PowerShell — compile once, flash to one or more connected serial ports
 ```
+
+**v0.3 concurrency demo (in progress):** a separate build using nine Seeed
+XIAO ESP32C3 boards as independent "bells," per `docs/hardware-design.md` §7
+measurement 4. `xiao_c3_node.ino` is the base firmware every board runs —
+right now that's just a bring-up/liveness check plus OTA (over-the-air)
+update support, with the real ring/damp/BLE logic still to come. See the
+header comment in that sketch for what it does and why.
+
+**Why OTA:** nine boards sitting close together on a breadboard are
+impractical to keep re-cabling for USB flashing one at a time, and there's no
+USB hub in the loop for this build. The plan is: flash each board **once**
+over USB (off the breadboard, per board, using `tools/flash_all.ps1 -Ports
+<port>` or the Arduino IDE directly), then push every firmware update after
+that over WiFi.
+
+**OTA bring-up, one board at a time:**
+1. Copy `xiao_c3_node/wifi_credentials.h.example` to
+   `xiao_c3_node/wifi_credentials.h` and fill in your real WiFi SSID/password.
+   That file is gitignored — never commit real credentials. The ESP32C3 is
+   **2.4GHz-only**; if your network is 5GHz-only or a mesh system that hides
+   its 2.4GHz band, connect to the 2.4GHz SSID explicitly.
+2. Flash over USB as usual. Open Serial Monitor at 115200 — you should see it
+   join WiFi and print a hostname like `ehb-c3-a1b2c3.local` plus an IP
+   address. That hostname is derived automatically from the board's own MAC
+   address, so all nine boards get distinct, stable names with no per-board
+   source edits.
+3. Note each board's hostname somewhere as you bring them up one at a time —
+   it's how you'll address that specific board for OTA later.
+4. From then on, updates go out over the network via `arduino-cli upload`
+   pointed at the board's hostname/IP instead of a COM port. A batch script
+   for updating all nine at once is next, once OTA is validated working
+   end-to-end on one board.
 
 **v0.2 note:** `feather_transmitter.ino` was changed to BLE-only for the
 Android demo (Android has no ESP-NOW support), which also removes the
