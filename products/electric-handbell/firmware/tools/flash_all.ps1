@@ -10,12 +10,21 @@
   USAGE
     From this folder or anywhere, e.g.:
       .\flash_all.ps1
-      .\flash_all.ps1 -Sketch ..\xiao_c3_bringup
+      .\flash_all.ps1 -Sketch ..\xiao_c3_node
       .\flash_all.ps1 -Ports COM5,COM6,COM7
 
     With no -Ports, it auto-detects every currently connected serial port
     and tries to flash all of them. With no -Sketch, it defaults to
-    xiao_c3_bringup (today's bring-up test sketch).
+    xiao_c3_node (the current base node firmware).
+
+  PARTITION SCHEME
+    Defaults to PartitionScheme=min_spiffs (1.9MB APP with OTA, vs. the
+    default scheme's 1.2MB -- NimBLE+WiFi+OTA together need the room, and we
+    don't use the filesystem partition this trades away). This is baked into
+    the compiled binary's partition TABLE, which only gets (re)written on a
+    USB flash -- OTA can't change it, it only writes into whatever app slots
+    the currently-installed table already defines. So if a board's partition
+    scheme ever needs to change again, that board needs one more USB flash.
 
   WHY ONE COMPILE, MANY UPLOADS
     `arduino-cli compile` is the slow step (tens of seconds). `arduino-cli
@@ -36,8 +45,9 @@
 #>
 
 param(
-  [string]$Sketch = "$PSScriptRoot\..\xiao_c3_bringup",
+  [string]$Sketch = "$PSScriptRoot\..\xiao_c3_node",
   [string]$Fqbn = "esp32:esp32:XIAO_ESP32C3",
+  [string]$BoardOptions = "PartitionScheme=min_spiffs",
   [string[]]$Ports
 )
 
@@ -74,7 +84,7 @@ Write-Output "Ports:   $($Ports -join ', ')"
 Write-Output ""
 
 Write-Output "=== Compiling once ==="
-& $Cli compile --fqbn $Fqbn $Sketch --output-dir $BuildDir
+& $Cli compile --fqbn $Fqbn --board-options $BoardOptions $Sketch --output-dir $BuildDir --clean
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Compile failed -- fix the sketch before flashing any boards."
   exit 1
@@ -86,7 +96,7 @@ $Succeeded = @()
 foreach ($port in $Ports) {
   Write-Output ""
   Write-Output "=== Flashing $port ==="
-  & $Cli upload -p $port --fqbn $Fqbn --input-dir $BuildDir
+  & $Cli upload -p $port --fqbn $Fqbn --board-options $BoardOptions --input-dir $BuildDir
   if ($LASTEXITCODE -eq 0) {
     $Succeeded += $port
   } else {
