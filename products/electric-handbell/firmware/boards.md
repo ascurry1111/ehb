@@ -14,14 +14,14 @@ only, not something to configure.
 | ID | Reserved IP     | MAC               | OTA hostname       | Status |
 |----|------------------|-------------------|---------------------|--------|
 | 01 | 192.168.35.201   | ac:27:6e:7e:f8:fc | ehb-c3-7ef8fc       | Bring-up + OTA validated |
-| 02 | 192.168.35.202   | —                 | —                   | Not yet brought up |
-| 03 | 192.168.35.203   | —                 | —                   | Not yet brought up |
-| 04 | 192.168.35.204   | —                 | —                   | Not yet brought up |
-| 05 | 192.168.35.205   | —                 | —                   | Not yet brought up |
-| 06 | 192.168.35.206   | —                 | —                   | Not yet brought up |
-| 07 | 192.168.35.207   | —                 | —                   | Not yet brought up |
-| 08 | 192.168.35.208   | —                 | —                   | Not yet brought up |
-| 09 | 192.168.35.209   | —                 | —                   | Not yet brought up |
+| 02 | 192.168.35.202   | ac:27:6e:7e:ad:54 | ehb-c3-7ead54       | Bring-up + OTA validated |
+| 03 | 192.168.35.203   | ac:27:6e:7f:01:6c | ehb-c3-7f016c       | Bring-up + OTA validated |
+| 04 | 192.168.35.204   | ac:27:6e:7c:b9:e8 | ehb-c3-7cb9e8       | Bring-up + OTA validated |
+| 05 | 192.168.35.205   | ac:27:6e:7e:3e:4c | ehb-c3-7e3e4c       | Bring-up + OTA validated |
+| 06 | 192.168.35.206   | ac:27:6e:7c:cb:1c | ehb-c3-7ccb1c       | Bring-up + OTA validated |
+| 07 | 192.168.35.207   | ac:27:6e:7c:a4:64 | ehb-c3-7ca464       | Bring-up + OTA validated |
+| 08 | 192.168.35.208   | ac:27:6e:7e:fe:f0 | ehb-c3-7efef0       | Bring-up + OTA validated |
+| 09 | 192.168.35.209   | ac:27:6e:7e:de:b8 | ehb-c3-7edeb8       | Bring-up + OTA validated |
 
 **To bring up a new board:** flash it over USB once (see firmware/README.md),
 note the MAC and hostname it prints over serial on first boot, set a DHCP

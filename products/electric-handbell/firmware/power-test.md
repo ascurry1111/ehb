@@ -163,3 +163,87 @@ interleaves connection events rather than firing them in lockstep. That
 makes "9 × 300mA simultaneously" an upper bound rather than the expected
 case — but it is an argument, not a measurement. Worth re-running this rig
 with 2–3 boards connected at once to see the real distribution.
+
+## 5. Nine-board rig results
+
+Full rig: 9 boards across 2 breadboards, USB-C breakout feeding the middle
+of one rail, slide switch on the feed, 1000µF bulk electrolytics spread
+across both breadboards, 0.1µF ceramic at each board. Measured on the PPK2.
+
+| Condition | Average | Max |
+|---|---|---|
+| Power-on inrush | — | 1.5A, split second |
+| ~0.5s after power-on | — | 1.068A |
+| Idle, all 9 (activity 1) | 0.51A | 0.85A |
+| BLE connected + playing (activity 4) | 0.52A | 0.65A |
+| OTA push | barely moved the average; peaks stayed under 1A |
+
+**The peaks do not coincide — that was the open question from §4.** Nine
+boards each spiking ~200mA would be 1.8A if they lined up. Measured max at
+idle was 0.85A. Between the phone's link layer interleaving connection
+events across its peripherals, and the bulk capacitance absorbing the fast
+edges, it flattens right out. The "9 × 300mA" figure was an upper bound and
+behaved like one.
+
+**Per-board numbers hold up.** 0.51A ÷ 9 ≈ 57mA per board at idle, matching
+the ~55–65mA single-board baseline from §3.
+
+**Connected+playing peaks *lower* than idle** (0.65A vs 0.85A), consistent
+with the single-board finding that concurrent WiFi+BLE idle is the most
+expensive state — WiFi is torn down once the app connects.
+
+**The power-on inrush is the capacitors, not the boards.** Charging several
+thousand µF from flat draws a large, very brief transient limited only by
+path resistance. "Exactly 1.5A" is almost certainly the PPK2 clamping
+rather than a real measurement.
+
+**Power is closed as a design risk**, with two things still untested:
+
+- Everything so far was measured on the PPK2, which sources roughly 1A.
+  Peaks of 0.85–1.07A sit at or above that ceiling, so some readings may be
+  clipped. **The actual USB power bank has not been tested with the full
+  rig yet.**
+- Some power banks trip over-current protection on capacitor inrush and
+  refuse to start. Worth confirming the real bank cold-starts the rig with
+  the switch, since that inrush is now several thousand µF worth.
+
+## 6. Blocker: Android caps BLE connections at 7
+
+Connecting all nine boards from nRF Connect for Mobile failed consistently
+at **seven**. Which seven did not matter — the eighth was refused until one
+was dropped.
+
+This is not an nRF Connect limitation and not a BLE spec limitation. It is
+Android's Bluetooth stack: `BTA_GATTC_CONN_MAX` in Bluedroid caps
+concurrent GATT client connections at 7, and the phone's Bluetooth
+controller imposes its own ceiling on top (commonly 4–7). The exact number
+varies by device and Android version, so it is worth confirming on the
+actual demo phone rather than assuming 7 everywhere.
+
+**This blocks the demo as currently designed**, which assumes the Android
+app holds a simultaneous connection to each of nine boards.
+
+It is also empirical evidence for what `docs/hardware-design.md` §3.3
+predicted from the other direction: unicast connections do not scale to
+ensemble size. That section flags ESP-NOW's 20-peer table cap as the same
+class of problem, and open decision #4 — "how ~60 units share the air" — is
+exactly this question. A 3-octave choir is ~11 ringers. Seven is not enough
+for the demo, let alone the product.
+
+Options, none decided yet:
+
+1. **Sequential push, connectionless playback.** Connect to one board at a
+   time to push its program, then disconnect. During the song, boards
+   broadcast ring/damp as BLE advertisement payloads and the phone scans
+   instead of connecting. No connection limit at all, and it removes the
+   connection-interval power cost identified in §4. Cost: advertisements
+   are unacknowledged, so a dropped packet is a dropped note — mitigated by
+   repeating each event a few times with a sequence number and deduping on
+   the phone.
+2. **Drop to seven boards.** Simplest. Still a meaningful concurrency demo,
+   but punts the problem and misses the ~11-ringer target.
+3. **Aggregator/hub.** One ESP32 talks to all nine boards over ESP-NOW
+   broadcast (no connection limit) and presents a *single* BLE connection to
+   the phone. Matches the receiver-dongle concept in §3.4 and would use a
+   C6 or S3 Feather already on hand. Adds a hop and a single point of
+   failure.

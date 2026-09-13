@@ -31,6 +31,7 @@ venv/
 
 # Real WiFi/OTA credentials -- keep only the .example template in git
 wifi_credentials.h
+ota_update_password.xml
 
 # Nordic PPK2 raw power captures -- tens of MB each, and the conclusions that
 # matter are written up in firmware/power-test.md. Kept locally, not in git.
