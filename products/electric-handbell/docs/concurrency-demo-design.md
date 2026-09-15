@@ -13,15 +13,22 @@ what the real product will do, that's called out rather than glossed.
 
 ## 1. What this demo is, and what it isn't
 
+**Why this exists.** The first question asked when demoing v0.2 was "can
+your app handle more than one bell?" The answer was no — v0.2 was never
+designed to, which was fine for v0.2. This demo is the answer to that
+question: a hardware and software setup that visibly handles multiple bells
+concurrently.
+
+That is the **primary** purpose. Using the rig for measurement afterwards
+(loss rates, latency distribution, `hardware-design.md` §7 measurement 4) is
+a secondary benefit that comes cheaply once it exists — worth building for,
+not worth compromising the demo for.
+
 Nine XIAO ESP32C3 boards each act as an independent "bell." Each receives a
-different program — a sequence of wait/ring/wait/damp steps with a pitch per
+different program — a list of timed ring and damp events with a pitch per
 ring — and all nine run their programs simultaneously so that together they
 play a piece, the way a handbell ensemble does. An Android app receives the
 ring and damp events from each board and renders the actual audio.
-
-**What it demonstrates:** that N independent transmitters can run
-concurrently, and that a single receiver can take events from all of them
-and turn them into coherent music.
 
 **What it deliberately does not demonstrate.** In the real product a ring is
 triggered by a motion sensor at an unpredictable instant, and the end-to-end
@@ -274,19 +281,56 @@ Upload is only needed again when the song itself changes.
 Fits comfortably in a legacy advertisement (~26 usable bytes of
 manufacturer-specific data), so extended advertising is not needed:
 
-**Event advertisement** (ring / damp):
+### Event encoding
+
+**Pitch carries the event type.** `0` = damp, `1–127` = ring at that MIDI
+note, `128–255` reserved for future event types. A separate `event_type`
+field would be redundant and would permit contradictory states — a "ring"
+with pitch 0, or a "damp" with pitch 60, neither of which means anything.
+Collapsing the two removes the ambiguity entirely and saves a byte.
+
+The board derives LED behaviour the same way: pitch > 0 lights it, pitch 0
+clears it.
+
+### Program (phone to board, Phase 1)
+
+A **song** is a collection of programs, one per bell, each tagged with the
+bell ID it belongs to. The app holds the song; each board receives only its
+own program.
+
+A program is a flat list of entries:
 
 | Field | Bytes | Note |
 |---|---|---|
-| Board ID | 1 | 1–9 here, with room to grow |
+| Offset from T0 | 3 | ms |
+| Pitch | 1 | 0 = damp, 1–127 = ring (see above) |
+
+Flat absolute offsets rather than a sequence of relative waits: no
+cumulative rounding, and the board can compute broadcast and LED times for
+any entry directly without walking the list.
+
+At ~4 bytes per entry, a two-minute piece with a note a second is on the
+order of a kilobyte — comfortably held in RAM, but **larger than a single
+GATT write**. Default ATT MTU is 23 bytes and a negotiated one is typically
+185–517, so the upload needs chunking: a chunk header with sequence and
+total count, and a completion check so the app knows the whole program
+landed before moving to the next board.
+
+The upload also carries the **bell ID** the board should use, and a program
+ID so the app can confirm what is loaded (§8).
+
+### Event advertisement (board to phone, Phase 3)
+
+| Field | Bytes | Note |
+|---|---|---|
+| Board ID | 1 | assigned at upload, not derived from MAC (§8) |
 | Run ID | 1 | disambiguates replays (§6) |
 | Sequence | 1 | wraps; used with board and run ID for dedup |
-| Event type | 1 | ring / damp |
-| Pitch | 1 | a MIDI note number covers the full range |
+| Pitch | 1 | 0 = damp, 1–127 = ring |
 | Offset from T0 | 3 | ms; 3 bytes covers ~4.6 hours |
 
-About 8 bytes, leaving room for a dynamic level later — which is what the
-real product will need.
+Seven bytes, leaving room for a dynamic level later — which is what the real
+product will need.
 
 **Start beacon** (phone to boards): run ID, and milliseconds remaining until
 T0. **Ready advertisement** (board to phone): board ID and run ID.
@@ -308,8 +352,58 @@ receipt. Fire-and-forget reintroduces the audio pipeline's own jitter and
 throws away the precision the playout buffer just bought. Two notes scheduled
 to the same frame are sample-accurate.
 
-This couples to the soundfont / instrument-selection requirement: the
-synthesis approach and the scheduling approach need to be decided together.
+**Synthesis: SF2 soundfont, rendered in-process.** The requirement is that it
+sound good across a wide pitch range and that adding new instruments is easy.
+A soundfont is the well-packaged form of exactly that — it is a container of
+*multisamples*, many recordings across the range each covering a narrow band,
+plus envelopes and loop points. (This is distinct from stretching a single
+sample across many pitches, which degrades badly away from its root note.)
+
+Engine options, against the scheduling requirement above:
+
+| Option | Verdict |
+|---|---|
+| Sonivox / EAS (Android built-in MIDI) | Poor timing control. Avoid |
+| FluidSynth via JNI | Full-featured and mature, but heavy |
+| **TinySoundFont + Oboe** | **Starting point.** Single-header C library, loads SF2, renders into a float buffer. We own the render loop, so notes can be placed at exact frame positions — which is what the scheduling requirement above demands |
+
+A damp becomes a note-off, letting the SF2 preset's own release envelope cut
+the tail, which is the behaviour a real handbell damp has anyway.
+
+### Bell identity
+
+**`firmware/boards.md` is the source of truth, and it does not change at
+runtime.** Board 01 is always Bell 1. The app must not assign bells to
+boards opportunistically.
+
+The bell ID is nonetheless **app-controlled, not firmware-controlled** — it
+is pushed as part of the upload (§7), so which physical board plays which
+part can be changed without reflashing anything. Firmware holds no identity
+of its own beyond its MAC-derived hostname.
+
+The app matches boards by **advertised name** (`ehb-c3-xxxxxx`, the same
+hostname `boards.md` records) rather than by MAC. Simpler, and it avoids
+Android's address-privacy behaviour entirely.
+
+Keep one source of truth: the app's bell table should be generated from, or
+hand-synced against, `boards.md` — not maintained independently.
+
+### User interface
+
+Primary display is a **list of the nine bells and their status** — loaded,
+armed for run N, playing, silent. That is the visual feedback the demo needs.
+
+Instrumentation (§9 loss counts, render timing) is written to logs, **not the
+primary display.** It is a secondary use of the rig (§1) and must not clutter
+what the demo is actually showing.
+
+### Relationship to the v0.2 app
+
+**This is a new app, not an extension of `HandbellReceiver`.** That app was
+built to show ring count, latency, force and volume for a single connected
+bell; this one scans rather than connects, handles nine boards, uploads
+programs, and renders soundfont audio on a scheduled timeline. Close to a
+rewrite, so it starts clean rather than accreting.
 
 ---
 
@@ -336,27 +430,49 @@ thing to measure first.
 
 ## 10. Open questions
 
-- **How precisely can an Android app control advertising emission timing?**
-  This is the biggest open risk. The countdown beacon (§6) assumes the app
-  can stamp "time remaining" reasonably close to when the packet actually
-  goes out, but Android's advertiser doesn't expose emission timing and
-  updating advertising payload has its own latency. If the spread turns out
-  too wide to hit the budget, the fallback is to designate one of the nine
-  boards as a conductor — an ESP32 has far tighter control over its own
-  advertising than an Android app does — and have the phone simply tell it
-  when to run the countdown. That stays within the existing hardware, unlike
-  a receiver dongle.
-- Measured start-beacon spread across nine boards — currently estimated at
-  ±5–10ms, which is now the dominant error term (§9)
-- Program format and size — not yet designed
-- Soundfont / synthesis approach, and how it couples to audio scheduling (§8)
+### Build this first: the beacon spike
+
+**How precisely can an Android app control advertising emission timing?**
+This is the biggest open risk and the dominant term in the error budget
+(§9). The countdown beacon (§6) assumes the app can stamp "time remaining"
+close to when the packet actually leaves the radio, but Android's advertiser
+does not expose emission timing and updating advertising payload has its own
+latency.
+
+It is cheap to answer, and answering it first avoids building an app around
+an assumption that may not hold:
+
+1. **Minimal Android app** that does nothing but advertise a countdown
+   beacon. This is app v0.1.
+2. **Firmware addition** to `xiao_c3_node.ino`: scan for the beacon, compute
+   T0, pulse a GPIO at T0.
+3. **Capture on the PPK2's digital input channels**, which
+   `hardware-design.md` §7 already noted work as "a low-end logic analyzer
+   with code-synchronized capture." All channels share one timebase at
+   100kHz — 10µs resolution against a ~10ms budget. Eight channels, but
+   three or four boards is plenty to distinguish a 2ms spread from a 40ms
+   one.
+
+Run the same rig a second time with **one board as the beacon source**
+instead of the phone. If the phone's timing turns out too loose, the
+conductor-board fallback is then already measured rather than hypothetical —
+and it stays within hardware already owned, unlike a receiver dongle.
+
+The OnePlus 15 is reported to support BLE peripheral mode; worth confirming
+programmatically via `isMultipleAdvertisementSupported()` as the first line
+of that app, since the whole §6 design depends on it.
+
+### Still open
+
 - Value for `RENDER_DELAY_MS`, and the measured Android audio output latency
   that sets the LED fudge constant (§5). Both want dialling in against the
   real app rather than guessing
-- The current test harness in `xiao_c3_node.ino` lights its LED at the event
-  instant, which is the old behaviour. It needs rewriting to the render
-  schedule when the real firmware is built
 - Observed advertisement loss rate with nine boards broadcasting, and whether
   3–5 repeats is the right redundancy
 - How a board behaves if it hears a beacon for a run it is already playing,
   or a program upload mid-run
+- Chunking scheme for program upload (§7) — sizes and acknowledgement not
+  yet specified
+- The current test harness in `xiao_c3_node.ino` lights its LED at the event
+  instant, which is the old behaviour. It needs rewriting to the render
+  schedule when the real firmware is built
