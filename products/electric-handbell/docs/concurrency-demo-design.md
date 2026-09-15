@@ -433,7 +433,7 @@ which desync becomes audible. Aiming for under 10ms.
 | Source | Contribution | Notes |
 |---|---|---|
 | Transport jitter (events) | **0** | absorbed by the playout buffer |
-| Start beacon spread | ±5–10ms, unmeasured | boards landing on slightly different T0 because they caught different beacons and the phone can't control emission timing precisely. **The dominant term, and the least understood** — see §10 |
+| Start beacon spread | **~3ms, measured** | four boards, PPK2 digital capture. Was the dominant unknown; came in better than the ±5–10ms estimate. See §10 |
 | Crystal drift | ~0.2ms over a 2-min piece | only accrues since T0, not since upload, now that timestamps are T0-relative |
 | Audio scheduling | 0, or 10–30ms+ | 0 if scheduled to a mixer timeline; large and variable if `play()` is called per event |
 | LED vs sound | 0 nominal | both scheduled to `event_offset + RENDER_DELAY_MS`. Residual is Android's audio output latency, which the LED leads unless compensated — one firmware-side constant closes it (§5) |
@@ -448,37 +448,43 @@ thing to measure first.
 
 ## 10. Open questions
 
-### Build this first: the beacon spike
+### Resolved: the beacon spike
 
-**How precisely can an Android app control advertising emission timing?**
-This is the biggest open risk and the dominant term in the error budget
-(§9). The countdown beacon (§6) assumes the app can stamp "time remaining"
-close to when the packet actually leaves the radio, but Android's advertiser
-does not expose emission timing and updating advertising payload has its own
-latency.
+**Question:** can an Android app control advertising emission timing closely
+enough that boards land on the same T0? This was the biggest risk in the
+design — Android does not expose emission timing, and updating advertising
+payload has its own latency. If it had failed, the architecture would have
+changed (one board becomes the conductor instead of the phone).
 
-It is cheap to answer, and answering it first avoids building an app around
-an assumption that may not hold:
+**Answer: yes, comfortably.** Four boards, each pulsing a GPIO at its own
+computed T0, captured on the PPK2's digital channels against one shared
+timebase:
 
-1. **Minimal Android app** that does nothing but advertise a countdown
-   beacon. This is app v0.1.
-2. **Firmware addition** to `xiao_c3_node.ino`: scan for the beacon, compute
-   T0, pulse a GPIO at T0.
-3. **Capture on the PPK2's digital input channels**, which
-   `hardware-design.md` §7 already noted work as "a low-end logic analyzer
-   with code-synchronized capture." All channels share one timebase at
-   100kHz — 10µs resolution against a ~10ms budget. Eight channels, but
-   three or four boards is plenty to distinguish a 2ms spread from a 40ms
-   one.
+| | |
+|---|---|
+| Spread, first to last rising edge | **~3ms** |
+| Target | under 10ms |
+| Audible-desync threshold | 30ms |
 
-Run the same rig a second time with **one board as the beacon source**
-instead of the phone. If the phone's timing turns out too loose, the
-conductor-board fallback is then already measured rather than hypothetical —
-and it stays within hardware already owned, unlike a receiver dongle.
+The conductor-board fallback is not needed. Phone stays the beacon source.
 
-The OnePlus 15 is reported to support BLE peripheral mode; worth confirming
-programmatically via `isMultipleAdvertisementSupported()` as the first line
-of that app, since the whole §6 design depends on it.
+Two observations from the run:
+
+- **The late board was the one that heard fewest beacons**, which is the
+  minimum-estimator behaving exactly as designed — fewer samples means a
+  less-converged minimum, biased late. The spread is therefore dominated by
+  per-board *catch rate*, not by clock error.
+- **Catch rate is the remaining lever** if tighter timing is ever wanted.
+  Boards heard 13–14 of 19 beacons. They are still advertising while
+  scanning, competing for the same radio; pausing advertising while armed
+  would likely recover more. Not worth doing at 10x inside budget, but it is
+  the thing to reach for first.
+
+Getting there also turned up two bugs worth remembering: WiFi retry fighting
+its own teardown (see the radio lifecycle note in §4), and — on the
+measurement side rather than the product — the PPK2's logic port VCC pin is a
+**reference input that must be connected to the DUT's logic voltage**, not an
+output. Without it the digital inputs read nothing at all.
 
 ### Still open
 
