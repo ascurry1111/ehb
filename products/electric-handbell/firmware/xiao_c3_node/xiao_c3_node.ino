@@ -71,6 +71,30 @@
                          disconnecting) returns to APP_CONNECTED/IDLE.
     (OTA-in-progress isn't a separate enum state -- it's just STATE_IDLE
     with a real OTA push happening. See firmware/power-test.md.)
+
+  START BEACON LISTENER (docs/concurrency-demo-design.md §6)
+    The board scans continuously for the phone's start beacon: a countdown to
+    T0, repeated ~20 times over two seconds. Each repeat carries the time
+    REMAINING rather than a timestamp, so catching any single beacon is
+    enough and a late catch is no worse than an early one.
+
+    Across several beacons the board keeps the EARLIEST implied T0. Every
+    error between the phone stamping the countdown and us reading the clock
+    -- staging latency, air time, callback latency -- can only make T0 look
+    later than it is, never earlier, so the minimum is the best estimate.
+
+    At T0 the board pulses its LED. An esp_timer one-shot drives that, not a
+    poll in loop(), because ArduinoOTA.handle() can block for milliseconds
+    and that jitter would land squarely in the measurement.
+
+    WiFi is torn down as soon as the first beacon of a run arrives, roughly
+    two seconds ahead of T0, so the radio is quiet and settled when it
+    matters. It comes back a few seconds after the pulse so the board stays
+    OTA-reachable between runs.
+
+    Right now the LED pulse IS the experiment -- wire D10 to a PPK2 digital
+    channel and the spread between boards' rising edges is the thing being
+    measured. See android/ConcurrencyDemo/README.md.
   ============================================================================
 */
 
@@ -79,6 +103,7 @@
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #include <NimBLEDevice.h>
+#include <esp_timer.h>
 
 #if __has_include("wifi_credentials.h")
   #include "wifi_credentials.h"
@@ -94,6 +119,26 @@
 #define BLE_CHAR_DAMP_UUID    "6e400005-b5a3-f393-e0a9-e50e24dcca9e"
 #define BLE_CHAR_PROGRAM_UUID "6e400006-b5a3-f393-e0a9-e50e24dcca9e"  // WRITE -- song program chunks (test harness: content ignored)
 #define BLE_CHAR_CONTROL_UUID "6e400007-b5a3-f393-e0a9-e50e24dcca9e"  // WRITE -- 0x01 start playing, 0x00 stop
+
+// --- Start beacon (see docs/concurrency-demo-design.md §6) ---
+// The phone broadcasts a countdown to T0, repeated ~20 times over two seconds.
+// Each repeat carries the time REMAINING, so a board catching repeat #48
+// computes the same absolute instant as one catching #47 -- any single beacon
+// is sufficient, and a late catch is no worse than an early one.
+//
+// This must match BeaconProtocol.kt in android/ConcurrencyDemo. The layout as
+// it arrives over the air is:
+//   byte 0..1  company ID, 0xFFFF little-endian (NimBLE includes it)
+//   byte 2..3  magic "EH"
+//   byte 4     message type
+//   byte 5     run ID
+//   byte 6..7  milliseconds remaining until T0, uint16 little-endian
+#define BEACON_MAGIC_0     0x45  // 'E'
+#define BEACON_MAGIC_1     0x48  // 'H'
+#define BEACON_MSG_START   0x01
+#define BEACON_FRAME_LEN   8
+#define T0_PULSE_MS        50    // LED pulse width at T0 -- the RISING edge is the measurement
+#define WIFI_RESTORE_MS    5000  // bring WiFi back this long after a run, so OTA works again
 
 // Same fast connection-interval target as feather_transmitter.ino -- this
 // test should reflect real demo latency requirements, not a lazy default.
@@ -137,6 +182,18 @@ NimBLECharacteristic* dampCharacteristic = nullptr;
 uint32_t nextRingId = 1;
 bool playLedOn = false;
 unsigned long lastPlayStepMs = 0;
+
+// --- Start beacon state. Touched from the NimBLE host task (scan callback)
+// and the esp_timer task, so anything loop() reads is volatile. ---
+NimBLEScan* bleScan = nullptr;
+esp_timer_handle_t t0Timer = nullptr;
+volatile bool t0Armed = false;
+volatile uint8_t armedRunId = 0;
+volatile int64_t bestT0Us = 0;       // best (earliest) estimate of T0, esp_timer clock
+volatile uint16_t beaconsHeard = 0;
+volatile bool t0Fired = false;
+volatile unsigned long pulseStartMs = 0;
+unsigned long wifiRestoreAtMs = 0;   // 0 = nothing scheduled
 
 void buildHostname() {
   uint64_t mac = ESP.getEfuseMac();
@@ -292,6 +349,91 @@ class ControlCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
   }
 };
 
+// ---------------------------------------------------------------------------
+// START BEACON LISTENER
+// ---------------------------------------------------------------------------
+
+// Fires at T0. Dispatched on the esp_timer task, NOT in an ISR, so ordinary
+// calls are safe here. Driving the pin from a timer rather than polling in
+// loop() keeps loop jitter -- ArduinoOTA.handle() in particular can block for
+// milliseconds -- out of the measurement.
+void onT0(void* arg) {
+  digitalWrite(LED_PIN, HIGH);
+  pulseStartMs = millis();
+  t0Fired = true;
+}
+
+void armT0Timer(int64_t delayUs) {
+  if (delayUs < 0) delayUs = 0;
+  esp_timer_stop(t0Timer);  // harmless if not running
+  esp_timer_start_once(t0Timer, delayUs);
+}
+
+class BeaconScanCallbacks : public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice* dev) override {
+    // Read the clock FIRST. Everything below this line adds delay that would
+    // otherwise be attributed to the beacon.
+    int64_t nowUs = esp_timer_get_time();
+
+    if (!dev->haveManufacturerData()) return;
+    std::string md = dev->getManufacturerData();
+    if (md.length() < BEACON_FRAME_LEN) return;
+
+    const uint8_t* b = (const uint8_t*)md.data();
+    if (b[0] != 0xFF || b[1] != 0xFF) return;                      // company ID 0xFFFF
+    if (b[2] != BEACON_MAGIC_0 || b[3] != BEACON_MAGIC_1) return;  // not ours
+    if (b[4] != BEACON_MSG_START) return;
+
+    uint8_t runId = b[5];
+    uint16_t msRemaining = (uint16_t)b[6] | ((uint16_t)b[7] << 8);
+    int64_t candidateUs = nowUs + (int64_t)msRemaining * 1000;
+
+    // WHY THE MINIMUM: every error between the phone stamping "ms remaining"
+    // and us reading the clock -- the phone's staging latency, time in the
+    // air, our own callback latency -- can only make T0 look LATER than it
+    // really is. None of them can make it look earlier. So across many
+    // beacons, the smallest estimate is the closest to truth.
+    if (!t0Armed || runId != armedRunId) {
+      t0Armed = true;
+      armedRunId = runId;
+      bestT0Us = candidateUs;
+      beaconsHeard = 1;
+      t0Fired = false;
+      // Quiet the radio well before T0. WiFi teardown is heavy, so it goes
+      // through loop() rather than happening here -- and starting it ~2s out
+      // leaves plenty of settling time.
+      wifiTeardownPending = true;
+      armT0Timer(candidateUs - nowUs);
+    } else {
+      beaconsHeard++;
+      if (candidateUs < bestT0Us) {
+        bestT0Us = candidateUs;
+        armT0Timer(candidateUs - nowUs);
+      }
+    }
+  }
+};
+
+void setupBeaconListener() {
+  esp_timer_create_args_t args = {};
+  args.callback = &onT0;
+  args.dispatch_method = ESP_TIMER_TASK;
+  args.name = "t0";
+  esp_timer_create(&args, &t0Timer);
+
+  bleScan = NimBLEDevice::getScan();
+  // wantDuplicates AND setDuplicateFilter(0): without both, we would see only
+  // the FIRST beacon of the countdown and never the updates -- which would
+  // defeat the entire mechanism, since the countdown value is the payload.
+  bleScan->setScanCallbacks(new BeaconScanCallbacks(), true);
+  bleScan->setDuplicateFilter(0);
+  bleScan->setActiveScan(false);  // passive: we need the advert, not a scan response
+  bleScan->setInterval(100);
+  bleScan->setWindow(100);        // window == interval: listen continuously
+  bleScan->start(0, false, true); // 0 = scan forever
+  Serial.println("Beacon listener scanning.");
+}
+
 void setupBle() {
   NimBLEDevice::init(hostname);
   NimBLEDevice::setPower(9);  // +9dBm, matches feather_transmitter.ino
@@ -363,6 +505,7 @@ void setup() {
     setupOta();
   }
   setupBle();
+  setupBeaconListener();
 
   Serial.println("Setup complete -- STATE_IDLE, advertising, WiFi/OTA up.");
   Serial.println();
@@ -380,6 +523,21 @@ void loop() {
   if (wifiRestorePending) {
     wifiRestorePending = false;
     enterIdleRadioState();
+  }
+
+  // --- Start beacon: end the T0 pulse and report the run ---
+  if (t0Fired && (long)(now - pulseStartMs) >= T0_PULSE_MS) {
+    digitalWrite(LED_PIN, LOW);
+    t0Fired = false;
+    t0Armed = false;
+    Serial.printf("[BEACON] run %u fired at T0, %u beacons heard\n",
+                  (unsigned)armedRunId, (unsigned)beaconsHeard);
+    // Bring WiFi back shortly so the board is OTA-reachable between runs.
+    wifiRestoreAtMs = now + WIFI_RESTORE_MS;
+  }
+  if (wifiRestoreAtMs != 0 && (long)(now - wifiRestoreAtMs) >= 0) {
+    wifiRestoreAtMs = 0;
+    wifiRestorePending = true;
   }
 
   switch (demoState) {
