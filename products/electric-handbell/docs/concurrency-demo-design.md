@@ -147,6 +147,47 @@ with a sequence number and deduped on the phone, at zero cost to timing
 accuracy. That removes the main weakness of connectionless delivery: a
 dropped advertisement no longer means a dropped note.
 
+### The LED follows the render schedule, not the event schedule
+
+Each board's LED lights on ring and clears on damp. It must be driven by the
+**same instant the phone renders the note**, not the instant the board
+reaches that step in its program — otherwise the LED leads the sound by the
+whole playout buffer, about 100ms, which is plainly visible.
+
+So the board schedules its LED at `event_offset + RENDER_DELAY_MS`, the same
+nominal instant the phone schedules the audio. Both sides compute it
+independently from T0 and arrive at the same answer.
+
+**The broadcast still goes out at `event_offset`, unchanged.** Only the LED
+is delayed. Delaying the transmission as well would consume the buffer that
+exists precisely to give the transport time to deliver.
+
+`RENDER_DELAY_MS` is therefore a **shared protocol constant**, not an app-side
+implementation detail. Firmware and app must use the identical value or the
+LED and the sound drift apart by the difference. It also means the phone
+cannot unilaterally lengthen its buffer if events start arriving late —
+that would silently break LED sync. Fixed by protocol for this demo.
+
+**Android's audio output latency is the residual gap.** Scheduling a frame
+is not the same as sound leaving the speaker; the audio path adds its own
+delay, so an uncompensated LED will still lead the sound slightly. Two ways
+to close it, in increasing order of rigour:
+
+- Add a fixed fudge constant to the *firmware* LED delay, dialled in once by
+  eye. Cheapest, and the LED delay is trivially adjustable.
+- Compensate properly on the phone: Oboe/AAudio report an output latency
+  estimate, so schedule the audio frame such that it *emerges* at the
+  nominal instant rather than merely being queued then.
+
+Accepted as-is for this demo either way — the LED clears at program end and
+on abort, so a stuck-on LED never reads as a hung board.
+
+**A free diagnostic falls out of this.** If an advertisement is lost, the
+board still lights its LED — it has no idea the phone missed it — but no
+sound plays. **An LED flash with no note is a dropped packet, visible to the
+naked eye.** For a demo whose entire purpose is measuring how well N
+concurrent transmitters get through, that is a genuinely useful accident.
+
 ---
 
 ## 6. Starting together
@@ -283,6 +324,7 @@ which desync becomes audible. Aiming for under 10ms.
 | Start beacon spread | ±5–10ms, unmeasured | boards landing on slightly different T0 because they caught different beacons and the phone can't control emission timing precisely. **The dominant term, and the least understood** — see §10 |
 | Crystal drift | ~0.2ms over a 2-min piece | only accrues since T0, not since upload, now that timestamps are T0-relative |
 | Audio scheduling | 0, or 10–30ms+ | 0 if scheduled to a mixer timeline; large and variable if `play()` is called per event |
+| LED vs sound | 0 nominal | both scheduled to `event_offset + RENDER_DELAY_MS`. Residual is Android's audio output latency, which the LED leads unless compensated — one firmware-side constant closes it (§5) |
 
 Note what moved. Drift used to be the term that scaled with duration; making
 timestamps relative to T0 collapsed it to near-nothing, because it only
@@ -308,6 +350,12 @@ thing to measure first.
   ±5–10ms, which is now the dominant error term (§9)
 - Program format and size — not yet designed
 - Soundfont / synthesis approach, and how it couples to audio scheduling (§8)
+- Value for `RENDER_DELAY_MS`, and the measured Android audio output latency
+  that sets the LED fudge constant (§5). Both want dialling in against the
+  real app rather than guessing
+- The current test harness in `xiao_c3_node.ino` lights its LED at the event
+  instant, which is the old behaviour. It needs rewriting to the render
+  schedule when the real firmware is built
 - Observed advertisement loss rate with nine boards broadcasting, and whether
   3–5 repeats is the right redundancy
 - How a board behaves if it hears a beacon for a run it is already playing,
