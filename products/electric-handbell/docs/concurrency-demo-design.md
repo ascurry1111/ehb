@@ -48,7 +48,9 @@ Android's limit (§3).
 - Per-board identity, reserved IPs and OTA hostnames: see `../firmware/boards.md`
 
 Measured draw for the full rig: ~0.51A average, 0.85A max at idle. Power is
-closed as a design risk — see `../firmware/power-test.md` §5.
+closed as a design risk — see `../firmware/power-test.md` §5. Confirmed on
+the real USB power bank: all nine boards up, on WiFi and advertising, stable
+over 30 minutes with seven connected and blinking.
 
 ---
 
@@ -114,17 +116,21 @@ where desync becomes audible.
 
 So arrival time must not be what determines playback time:
 
-1. **Shared clock.** During each board's Phase 1 connection, read its `Time`
-   characteristic (`6e400004-...`, already defined in v0.2 for exactly this
-   purpose) several times and average the round trips to derive that board's
-   clock offset.
-2. **Events carry timestamps.** Each ring/damp advertisement includes the
-   board's own clock value for when the event occurred, not merely the fact
-   that it occurred.
-3. **The phone renders through a playout buffer.** On receipt: convert to
-   phone time, then schedule the note for `event_time + buffer` (~100ms).
-   Anything arriving within the buffer window lands at exactly the right
-   instant, regardless of how long it took to get there.
+1. **Events are timestamped relative to T0**, not in absolute board-clock
+   terms. A board reports "ring at T0 + 4523ms", not "ring at my-clock
+   1699283". Since the phone chose T0 (§6), it can interpret every board's
+   events without knowing anything about that board's clock.
+2. **No per-board clock sync is needed at all.** An earlier draft of this
+   design had the phone read each board's `Time` characteristic
+   (`6e400004-...`, defined in v0.2 for exactly this) during upload and
+   average round trips to derive a clock offset. Deriving T0 from the start
+   beacon instead (§6) removes that step entirely — and with it a whole class
+   of staleness bug, since offsets measured at upload time go stale as clocks
+   drift apart, which the replay workflow makes much worse.
+3. **The phone renders through a playout buffer.** On receipt: schedule the
+   note for `T0 + event_offset + buffer` (~100ms). Anything arriving within
+   the buffer window lands at exactly the right instant, regardless of how
+   long it took to get there.
 
 **This is affordable here precisely because latency is not a demo
 requirement.** A playout buffer spends fixed latency to buy timing precision,
@@ -145,47 +151,80 @@ dropped advertisement no longer means a dropped note.
 
 ## 6. Starting together
 
-The mechanism: **there is no "start" command. T0 travels with the program in
-Phase 1**, and each board independently waits until its own clock reaches T0.
-A board cannot fail to hear the start signal, because there is no start
-signal to miss.
+**Decision: "Upload song" and "Start song" are two distinct operations in the
+app.** Upload distributes programs (Phase 1) and is a bounded task with a
+visible start and end. Start synchronises and begins playback, and takes only
+a few seconds.
 
-The wrinkle: **T0 has to still be in the future when the *last* board is
-pushed.** Phase 1 is sequential, and a BLE connect plus service discovery
-plus write plus disconnect is realistically 2–4 seconds per board — call it
-20–40 seconds for nine. Two ways to handle that:
+The earlier alternative — baking T0 into the program push and having each
+board wait for its own clock to reach it — was rejected. It required picking
+an arbitrary, conservative wait up front (the push budget for nine boards is
+20–40 seconds, so T0 would need a margin beyond that), which makes the user
+sit through a pause with no indication of why. Worse, it offers no way to
+**replay a song without re-uploading it**, which separating the two
+operations gives for free.
 
-**Option A — budget the push time up front.** The phone picks
-`T0 = now + (boards x expected_push_time) + margin` before Phase 1 begins and
-pushes that same T0 to every board. If distribution finishes early, everyone
-simply waits. If a push fails and the retries blow the budget, abort and
-restart the sequence with a fresh T0.
+### Why the start beacon must carry a countdown, not a timestamp
 
-- Simplest, and depends on no broadcast whatsoever.
-- Cost: a fixed "preparing" pause of up to a minute before the piece starts,
-  even when distribution went quickly.
+The phone broadcasts a start beacon repeatedly for ~2 seconds. Each repeat
+carries **the time remaining until T0**, decremented as it goes: repeat #47
+says "T0 in 2000ms", #48 says "T0 in 1900ms".
 
-**Option B — broadcast T0 once distribution completes.** Phase 1 carries only
-the program; once all nine are loaded, the phone broadcasts "start at T0"
-with T0 a couple of seconds out, repeated heavily.
+This matters. If beacons simply said "start 2000ms from when you hear this",
+a board catching #47 and a board catching #48 would land 100ms apart. With a
+countdown, both compute the same absolute instant, so **catching any single
+beacon is sufficient and catching a later one is no worse than catching an
+early one.** That is the same insight as §5 — an absolute instant tolerates
+delivery jitter in a way an imperative "go now" never can.
 
-- Better live experience: the wait is only as long as distribution actually
-  took.
-- **Late delivery is harmless**, which is the same insight as §5 — an
-  absolute timestamp tolerates jitter in a way an imperative "go now" does
-  not. A board needs to hear only *one* copy at *any* point before T0.
-- Failure mode: a board that hears none of them never plays. With heavy
-  repetition over a couple of seconds this is unlikely, but it is a non-zero
-  risk that Option A does not have.
+Boards that catch several beacons (most will, at ~20 repeats over 2s) can
+refine their estimate rather than trusting one sample. Taking the minimum
+implied delay across samples converges on the truth, since transport delay is
+always positive.
 
-**Recommendation: start with Option A.** It is simpler and has no failure
-mode, and an awkward pause is acceptable while we are still proving the
-concept. Move to B if the pause turns out to spoil the demo.
+### The beacon is also what synchronises the boards to each other
 
-**Do not combine them** by pushing a fallback T0 and letting a later
-broadcast override it. A board that misses the override would play at the
-wrong time, which is a worse and more confusing failure than a board that
-does not play at all.
+A broadcast is a *shared* reference event: every board in the room hears the
+same beacon at effectively the same instant. That makes it an excellent
+**relative** sync mechanism — which is precisely what musical timing needs —
+even though it is a mediocre absolute one.
+
+This is why upload-time clock sync was dropped (§5). Clock offsets measured
+during upload go stale: at ±40ppm, a 45-minute gap between upload and a
+replay is ~108ms of drift, well outside the 30ms budget, and boards drift
+apart from one another too. Re-deriving everything from a fresh beacon at
+start time makes the age of the upload irrelevant.
+
+### Readiness handshake
+
+The few seconds "Start song" takes should be doing real work, not counting
+down arbitrarily:
+
+1. App broadcasts countdown beacons for ~2s, carrying a **run ID** and T0.
+2. Each board that hears one broadcasts a short "ready, run N" advertisement.
+3. App collects readiness from all nine and shows which have armed.
+4. At T0, everyone starts.
+
+This turns the pause into a genuine pre-flight check, and makes the one real
+weakness of this approach — a board that hears no beacon simply never plays —
+*visible before the piece starts* rather than discovered halfway through.
+If a board hasn't armed, the app can warn or abort and retry before T0
+arrives.
+
+### Run ID
+
+Every beacon and every event advertisement carries a run ID. Without it,
+replaying a song is ambiguous: the phone cannot tell a ring from run 2 from a
+late-arriving straggler from run 1, and a board already mid-song cannot tell
+a stale beacon from a new one. The run ID also gives the app a free
+diagnostic — a board that never emits events for the current run didn't
+start.
+
+### Board state across runs
+
+For replay to work, a board must **retain its program after playing it
+through** and return to a "loaded, idle" state ready to accept a new T0.
+Upload is only needed again when the song itself changes.
 
 ---
 
@@ -194,16 +233,22 @@ does not play at all.
 Fits comfortably in a legacy advertisement (~26 usable bytes of
 manufacturer-specific data), so extended advertising is not needed:
 
+**Event advertisement** (ring / damp):
+
 | Field | Bytes | Note |
 |---|---|---|
 | Board ID | 1 | 1–9 here, with room to grow |
-| Sequence | 1 | wraps; used with board ID for dedup |
+| Run ID | 1 | disambiguates replays (§6) |
+| Sequence | 1 | wraps; used with board and run ID for dedup |
 | Event type | 1 | ring / damp |
 | Pitch | 1 | a MIDI note number covers the full range |
-| Timestamp | 4 | board clock, ms |
+| Offset from T0 | 3 | ms; 3 bytes covers ~4.6 hours |
 
 About 8 bytes, leaving room for a dynamic level later — which is what the
 real product will need.
+
+**Start beacon** (phone to boards): run ID, and milliseconds remaining until
+T0. **Ready advertisement** (board to phone): board ID and run ID.
 
 ---
 
@@ -234,23 +279,36 @@ which desync becomes audible. Aiming for under 10ms.
 
 | Source | Contribution | Notes |
 |---|---|---|
-| Transport jitter | **0** | absorbed by the playout buffer |
-| Clock sync accuracy | ±2–5ms | improvable with round-trip averaging |
-| Crystal drift | ±2–5ms per board over 2 min | ESP32 modules typically ±20–40ppm; two boards drifting opposite ways roughly doubles it |
+| Transport jitter (events) | **0** | absorbed by the playout buffer |
+| Start beacon spread | ±5–10ms, unmeasured | boards landing on slightly different T0 because they caught different beacons and the phone can't control emission timing precisely. **The dominant term, and the least understood** — see §10 |
+| Crystal drift | ~0.2ms over a 2-min piece | only accrues since T0, not since upload, now that timestamps are T0-relative |
 | Audio scheduling | 0, or 10–30ms+ | 0 if scheduled to a mixer timeline; large and variable if `play()` is called per event |
 
-Drift is the only term that scales with duration. Fine for a demo-length
-piece; anything long would need periodic re-sync.
+Note what moved. Drift used to be the term that scaled with duration; making
+timestamps relative to T0 collapsed it to near-nothing, because it only
+accumulates over the length of one piece rather than since upload. The
+budget is now dominated by how tightly the start beacon lands, which is the
+thing to measure first.
 
 ---
 
 ## 10. Open questions
 
+- **How precisely can an Android app control advertising emission timing?**
+  This is the biggest open risk. The countdown beacon (§6) assumes the app
+  can stamp "time remaining" reasonably close to when the packet actually
+  goes out, but Android's advertiser doesn't expose emission timing and
+  updating advertising payload has its own latency. If the spread turns out
+  too wide to hit the budget, the fallback is to designate one of the nine
+  boards as a conductor — an ESP32 has far tighter control over its own
+  advertising than an Android app does — and have the phone simply tell it
+  when to run the countdown. That stays within the existing hardware, unlike
+  a receiver dongle.
+- Measured start-beacon spread across nine boards — currently estimated at
+  ±5–10ms, which is now the dominant error term (§9)
 - Program format and size — not yet designed
 - Soundfont / synthesis approach, and how it couples to audio scheduling (§8)
-- Whether Option A's pause is tolerable in practice, or B is needed (§6)
-- Clock-sync accuracy over the sequential-push flow — currently estimated,
-  not measured
 - Observed advertisement loss rate with nine boards broadcasting, and whether
   3–5 repeats is the right redundancy
-- Power bank not yet tested with the full rig (`../firmware/power-test.md` §5)
+- How a board behaves if it hears a beacon for a run it is already playing,
+  or a program upload mid-run

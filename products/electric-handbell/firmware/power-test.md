@@ -197,15 +197,16 @@ thousand µF from flat draws a large, very brief transient limited only by
 path resistance. "Exactly 1.5A" is almost certainly the PPK2 clamping
 rather than a real measurement.
 
-**Power is closed as a design risk**, with two things still untested:
+**Power is closed as a design risk.**
 
-- Everything so far was measured on the PPK2, which sources roughly 1A.
-  Peaks of 0.85–1.07A sit at or above that ceiling, so some readings may be
-  clipped. **The actual USB power bank has not been tested with the full
-  rig yet.**
-- Some power banks trip over-current protection on capacitor inrush and
-  refuse to start. Worth confirming the real bank cold-starts the rig with
-  the switch, since that inrush is now several thousand µF worth.
+One caveat on the numbers above: they were measured on the PPK2, which
+sources roughly 1A, and peaks of 0.85–1.07A sit at or above that ceiling —
+so some of those readings may be clipped rather than true.
+
+**Confirmed on the real USB power bank.** All nine boards cold-started from
+the switch with no over-current trip, despite several thousand µF of
+capacitor inrush. All nine joined WiFi and appeared in a BLE scan. Stable
+over ~30 minutes with seven boards connected and blinking.
 
 ## 6. Blocker: Android caps BLE connections at 7
 
