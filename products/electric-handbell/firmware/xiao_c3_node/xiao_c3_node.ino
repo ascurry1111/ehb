@@ -87,10 +87,12 @@
     poll in loop(), because ArduinoOTA.handle() can block for milliseconds
     and that jitter would land squarely in the measurement.
 
-    WiFi is torn down as soon as the first beacon of a run arrives, roughly
-    two seconds ahead of T0, so the radio is quiet and settled when it
-    matters. It comes back a few seconds after the pulse so the board stays
-    OTA-reachable between runs.
+    WiFi RETIRES as soon as the board enters application use -- first BLE
+    connection or first start beacon, whichever comes first -- and stays down
+    until the board is power-cycled. WiFi exists here only for OTA, and once
+    the board is in use OTA is unwanted anyway while the radio contention
+    actively hurts. Power-cycle to get OTA back. See retireWifi() for the bug
+    that made a latch necessary rather than a simple teardown.
 
     Right now the LED pulse IS the experiment -- wire D10 to a PPK2 digital
     channel and the spread between boards' rising edges is the thing being
@@ -138,7 +140,6 @@
 #define BEACON_MSG_START   0x01
 #define BEACON_FRAME_LEN   8
 #define T0_PULSE_MS        50    // LED pulse width at T0 -- the RISING edge is the measurement
-#define WIFI_RESTORE_MS    5000  // bring WiFi back this long after a run, so OTA works again
 
 // Same fast connection-interval target as feather_transmitter.ino -- this
 // test should reflect real demo latency requirements, not a lazy default.
@@ -193,7 +194,7 @@ volatile int64_t bestT0Us = 0;       // best (earliest) estimate of T0, esp_time
 volatile uint16_t beaconsHeard = 0;
 volatile bool t0Fired = false;
 volatile unsigned long pulseStartMs = 0;
-unsigned long wifiRestoreAtMs = 0;   // 0 = nothing scheduled
+bool wifiRetired = false;            // latched once WiFi is shut down for good
 
 void buildHostname() {
   uint64_t mac = ESP.getEfuseMac();
@@ -273,21 +274,31 @@ void setupOta() {
   Serial.printf("OTA ready -- upload target: %s.local\n", hostname);
 }
 
-// Brings WiFi + OTA up for STATE_IDLE. Safe to call repeatedly.
-void enterIdleRadioState() {
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  }
-  // otaReady gets (re)set once WiFi actually reconnects, in loop().
-}
+/*
+  Shuts WiFi down PERMANENTLY, until the board is power-cycled.
 
-// Tears WiFi + OTA down for STATE_APP_CONNECTED / STATE_PLAYING.
-void exitIdleRadioState() {
+  WiFi exists on this board for exactly one reason: OTA updates. The moment
+  the board is in application use -- a BLE client connected, or a start beacon
+  received -- OTA is not wanted anyway, and the radio contention actively
+  hurts. So WiFi retires rather than pausing.
+
+  This is a latch on purpose. An earlier version merely tore WiFi down and let
+  STATE_IDLE's own reconnect logic see a disconnected radio and immediately
+  call WiFi.begin() again -- which meant the board spent the entire beacon
+  countdown scanning for an access point, the single most radio-intensive
+  thing it can do. Boards heard 5-10 beacons out of 19. The teardown and the
+  retry were fighting each other inside the exact window the teardown existed
+  to protect.
+
+  To get OTA back: power-cycle the board.
+*/
+void retireWifi(const char* reason) {
+  if (wifiRetired) return;
+  wifiRetired = true;
   otaReady = false;
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
-  Serial.println("WiFi off -- BLE client connected.");
+  Serial.printf("WiFi retired (%s) -- OTA unavailable until power cycle.\n", reason);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +307,6 @@ void exitIdleRadioState() {
 
 // Set from BLE callbacks, acted on in loop() -- see the comment below.
 volatile bool wifiTeardownPending = false;
-volatile bool wifiRestorePending = false;
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   // IMPORTANT: keep these callbacks fast. They run on NimBLE's own host
@@ -316,8 +326,9 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo, int reason) override {
     Serial.println("[BLE] client disconnected, restarting advertising");
     digitalWrite(LED_PIN, LOW);
+    // WiFi is NOT brought back here -- it retired on connect and stays down
+    // until power cycle. See retireWifi().
     demoState = STATE_IDLE;
-    wifiRestorePending = true;
     NimBLEDevice::startAdvertising();
   }
 };
@@ -518,11 +529,7 @@ void loop() {
   // on ServerCallbacks. Handled first, before anything else this iteration.
   if (wifiTeardownPending) {
     wifiTeardownPending = false;
-    exitIdleRadioState();
-  }
-  if (wifiRestorePending) {
-    wifiRestorePending = false;
-    enterIdleRadioState();
+    retireWifi(demoState == STATE_IDLE ? "start beacon" : "BLE client connected");
   }
 
   // --- Start beacon: end the T0 pulse and report the run ---
@@ -532,12 +539,6 @@ void loop() {
     t0Armed = false;
     Serial.printf("[BEACON] run %u fired at T0, %u beacons heard\n",
                   (unsigned)armedRunId, (unsigned)beaconsHeard);
-    // Bring WiFi back shortly so the board is OTA-reachable between runs.
-    wifiRestoreAtMs = now + WIFI_RESTORE_MS;
-  }
-  if (wifiRestoreAtMs != 0 && (long)(now - wifiRestoreAtMs) >= 0) {
-    wifiRestoreAtMs = 0;
-    wifiRestorePending = true;
   }
 
   switch (demoState) {
@@ -545,7 +546,10 @@ void loop() {
       if (otaReady) {
         ArduinoOTA.handle();
       }
-      if (WiFi.status() != WL_CONNECTED) {
+      // The !wifiRetired guard is load-bearing: without it this branch sees
+      // the radio we just shut down and immediately reconnects it, right in
+      // the middle of a beacon countdown. See retireWifi().
+      if (!wifiRetired && WiFi.status() != WL_CONNECTED) {
         if (now - lastWifiRetryMs >= WIFI_RETRY_INTERVAL_MS) {
           lastWifiRetryMs = now;
           Serial.println("WiFi not connected -- retrying...");

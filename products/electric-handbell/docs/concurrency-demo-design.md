@@ -101,6 +101,24 @@ design scales well past nine.
 Every board begins its program at the same absolute instant, T0. See §6 —
 this is the part with a real wrinkle in it.
 
+### Radio lifecycle: WiFi retires, it does not pause
+
+WiFi exists on these boards for exactly one purpose — OTA updates. **The first
+time a board enters application use, WiFi shuts down and stays down until the
+board is power-cycled.** "Application use" means whichever comes first: a BLE
+client connecting, or a start beacon arriving.
+
+Not a pause, a latch. The first implementation merely tore WiFi down when
+needed, and the idle-state reconnect logic promptly saw a disconnected radio
+and called `WiFi.begin()` again — so boards spent the entire beacon countdown
+scanning for an access point, which is about the most radio-intensive thing an
+ESP32 can do. Measured result: boards heard 5–10 of 19 beacons. The teardown
+and the retry were fighting each other inside the precise window the teardown
+existed to protect.
+
+Consequence for the workflow: **power-cycle before an OTA push.** Cheap, given
+the whole rig is on one switch.
+
 ### Phase 3 — Playback (connectionless)
 
 Boards broadcast ring/damp events as BLE advertisements. The phone runs a
